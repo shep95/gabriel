@@ -42,8 +42,10 @@ installs a service worker and keeps working with the network off.
 
 ## look
 
-the interface is read from one picture (`img/sky.webp`): a night sky full of
-stars, a ringed moon low over a bank of cloud lit amber from below. surfaces
+the interface is read from one picture: a night sky full of stars, a ringed
+moon low over a bank of cloud lit amber from below. the photograph itself is
+not in the tree yet; it belongs at `img/sky.webp`, referenced from the
+`.bg .picture` rule in `css/base.css` and the worker's precache list. surfaces
 are smoked glass so the sky stays visible; text is the moon's off-white; the
 single accent is the cloud's ember and appears only where something is on or
 trusted; the primary button is the moon, the one solid light on the page. the
@@ -52,7 +54,8 @@ breathes, the stars turn once in eleven minutes, the glow at the cloud line
 drifts, and all of it stops under reduced-motion. a "deep" variant in
 settings dims the picture and thickens the glass for dark rooms and long
 nights. the sky is layered in css beneath the picture, so the page is whole
-before the image has decoded and offline before it has been cached.
+before the image has decoded, offline before it has been cached, and
+tonight without it.
 
 ## layout
 
@@ -78,7 +81,6 @@ web/
   js/landing.js  js/app.js
   vendor/               qrcode-generator (mit), jsQR (apache-2.0), leaflet (bsd-2), inter (ofl), with licenses
   icons/                app icons (the ringed moon) and the social image
-  img/                  the picture
   scripts/set-site-url.mjs   writes canonical/og:url/sitemap for a domain
   tests/e2e.mjs         headless end-to-end check (see tests/README.md)
 ```

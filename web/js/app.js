@@ -202,7 +202,7 @@ function renderCreate() {
         <div class="eyebrow reveal in">first run on this device</div>
         <h1 class="reveal in" style="--i:1">choose a name and a passphrase.</h1>
         <p class="reveal in" style="--i:2">the name is what other devices will see when you pair. the passphrase never leaves this device and cannot be reset.</p>
-        <form id="create-form" class="reveal in" style="--i:3" autocomplete="off">
+        <form id="create-form" class="reveal in" style="--i:3" autocomplete="off" novalidate>
           <div class="field"><label for="c-name">name</label><input id="c-name" type="text" maxlength="24" required autocomplete="nickname" autocapitalize="off"></div>
           <div class="field"><label for="c-pass">passphrase</label><input id="c-pass" type="password" minlength="8" required autocomplete="new-password"><div class="hint" id="c-hint">length matters more than symbols. four unrelated words is a good passphrase.</div></div>
           <div class="field"><label for="c-pass2">again</label><input id="c-pass2" type="password" required autocomplete="new-password"></div>
@@ -255,7 +255,7 @@ function renderUnlock() {
         <div class="eyebrow reveal in">${escapeHtml(state.profile.name)}</div>
         <h1 class="reveal in" style="--i:1">unlock.</h1>
         <p class="reveal in" style="--i:2">everything on this device stays sealed until the passphrase opens it.</p>
-        <form id="unlock-form" class="reveal in" style="--i:3">
+        <form id="unlock-form" class="reveal in" style="--i:3" novalidate>
           <div class="field"><label for="u-pass">passphrase</label><input id="u-pass" type="password" required autocomplete="current-password"></div>
           <div class="actions"><button class="primary" type="submit" id="u-submit">open</button><span class="hint" id="u-status"></span></div>
         </form>
@@ -266,6 +266,7 @@ function renderUnlock() {
   form.addEventListener('submit', async (e) => {
     e.preventDefault();
     const input = $('#u-pass');
+    if (!input.value) { input.focus(); return toast('the passphrase is needed', 'error'); }
     const btn = $('#u-submit'); btn.disabled = true; $('#u-status').textContent = 'checking…';
     try {
       state.vaultKey = await unlockVault(input.value, state.profile);
@@ -1178,9 +1179,15 @@ async function viewPrivacy(el) {
     </section>`;
   paintBeaconChip();
   $('#b-connect').onclick = async () => {
-    if (beacon.status === 'on' || beacon.status === 'connecting') { disconnectBeacon(); $('#b-connect').textContent = 'connect'; return; }
+    const busy = beacon.status === 'on' || beacon.status === 'connecting';
+    let typed = null;
+    try { typed = normalizeBeaconUrl($('#b-url').value); } catch (e) { if (busy) typed = null; else return toast(e.message, 'error'); }
+    // the same address while connected or connecting: disconnect. a different
+    // address: drop the current attempt and go to the new one in a single press
+    if (busy && (!typed || typed === s.beaconUrl)) { disconnectBeacon(); $('#b-connect').textContent = 'connect'; return; }
+    if (busy) disconnectBeacon();
     try {
-      const url = normalizeBeaconUrl($('#b-url').value);
+      const url = typed;
       s.beaconUrl = url; s.beaconPassword = $('#b-pw').value; s.beaconAuto = $('#b-auto').checked;
       await saveSettings();
       connectBeacon(url, s.beaconPassword);

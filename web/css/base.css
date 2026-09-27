@@ -122,9 +122,12 @@ body {
   animation: turn calc(var(--drift) * 6) linear infinite;
   transform-origin: 52% 38%;
 }
+/* the photograph goes here when it lands at img/sky.webp: add it to this
+   rule as `background: url("../img/sky.webp") center 42% / cover no-repeat`
+   and to the worker's precache. until then the layers below it are the sky. */
 .bg .picture {
   inset: -4%;
-  background: url("../img/sky.webp") center 42% / cover no-repeat;
+  background: transparent center 42% / cover no-repeat;
   animation: breathe var(--drift) ease-in-out infinite alternate;
   will-change: transform;
 }
