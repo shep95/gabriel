@@ -1,0 +1,21 @@
+{
+  "name": "beacon",
+  "version": "0.1.0",
+  "private": true,
+  "description": "local https carrier and encrypted-message relay for the gabriel console",
+  "type": "module",
+  "main": "server.mjs",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "start": "node server.mjs",
+    "test": "node --test"
+  },
+  "dependencies": {
+    "qrcode-terminal": "0.12.0",
+    "selfsigned": "5.5.0",
+    "ws": "8.22.0"
+  },
+  "license": "Unlicense"
+}
