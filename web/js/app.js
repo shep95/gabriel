@@ -62,7 +62,7 @@ function lock(reason) {
   myPos = null;
   pairing = null;
   inbox.tid = null; inbox.total = 0; inbox.parts.clear();
-  state.settings = { ...DEFAULT_SETTINGS, autoLockMinutes: state.settings.autoLockMinutes };
+  state.settings = { ...DEFAULT_SETTINGS, autoLockMinutes: state.settings.autoLockMinutes, theme: state.settings.theme };
   applyShieldClass();
   $('#lock-btn').hidden = true;
   $('#who').textContent = '';
@@ -92,6 +92,7 @@ function coerceSettings(v) {
   o.beaconPassword = String(v.beaconPassword || '').slice(0, 200);
   o.beaconAuto = !!v.beaconAuto;
   o.iceServers = String(v.iceServers || '').slice(0, 2000);
+  o.theme = v.theme === 'night' ? 'night' : 'meadow';
   return o;
 }
 
@@ -106,6 +107,7 @@ async function loadSettingsUnlocked() {
     await saveSettings();
   }
   applyShieldClass();
+  applyTheme();
 }
 
 async function loadUnlockedData() {
@@ -160,10 +162,18 @@ async function saveNote(note) {
   state.notes.sort((a, b) => (b.updatedAt || '').localeCompare(a.updatedAt || ''));
 }
 
+function applyTheme() {
+  if (state.settings.theme === 'night') document.documentElement.dataset.theme = 'night';
+  else delete document.documentElement.dataset.theme;
+  const m = document.querySelector('meta[name="theme-color"]');
+  if (m) m.content = state.settings.theme === 'night' ? '#0a1420' : '#1c5b9c';
+}
+
 async function saveSettings() {
   if (!state.vaultKey) return;
   await db.put('meta', { id: 'settings', enc: await sealRecord(state.vaultKey, 'meta', 'settings', state.settings) });
   applyShieldClass();
+  applyTheme();
 }
 
 // ---------- gate: create / unlock ----------
@@ -1206,7 +1216,12 @@ function viewSettings(el) {
       <h2>settings</h2>
       <div class="sub">everything here acts on this device only.</div>
 
-      <div class="card"><h3>auto-lock</h3>
+      <div class="card"><h3>light</h3>
+        <p style="margin-top:.6rem">the same field by day, or at dusk for dark rooms and late hours.</p>
+        <div class="choice" style="margin-top:.8rem"><button class="small ${state.settings.theme !== 'night' ? 'on' : ''}" data-theme-pick="meadow">daylight</button><button class="small ${state.settings.theme === 'night' ? 'on' : ''}" data-theme-pick="night">dusk</button></div>
+      </div>
+
+      <div class="card" style="margin-top:1rem"><h3>auto-lock</h3>
         <div class="field" style="margin-top:.8rem"><label for="st-lock">minutes of inactivity before the vault locks (0 never)</label><input id="st-lock" type="number" min="0" max="240" value="${Number(state.settings.autoLockMinutes)}"></div>
         <button class="small" id="st-lock-save">save</button>
       </div>
@@ -1237,6 +1252,7 @@ function viewSettings(el) {
       <p class="locked-note">pairing key fingerprint <span class="mono">${state.identity.fingerprint}</span></p>
     </section>`;
 
+  el.querySelectorAll('[data-theme-pick]').forEach((b) => { b.onclick = async () => { state.settings.theme = b.dataset.themePick === 'night' ? 'night' : 'meadow'; await saveSettings(); viewSettings(el); }; });
   $('#st-lock-save').onclick = async () => {
     const v = Math.max(0, Math.min(240, Number($('#st-lock').value) || 0));
     state.settings.autoLockMinutes = v;

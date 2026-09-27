@@ -1,5 +1,11 @@
 /* gabriel console: shared tokens and primitives.
-   dark, cold, quiet. one accent, shown only when something is trusted. */
+
+   the world this interface lives in is the picture behind it: a cobalt sky, a
+   cascade of silver light falling into cloud, a green field, one person
+   walking. everything here is read from that. surfaces are frosted glass so
+   the field stays visible; text is the deep blue of the sky's shadow; the one
+   accent is field green and appears only when something is trusted; motion is
+   a slow drift, the pace of cloud, never a pop. */
 
 /* inter (ofl-1.1), vendored so the type is the same on every device and
    needs no network. thin weights carry the register; 400 is for controls. */
@@ -7,53 +13,80 @@
 @font-face { font-family: "Inter"; font-style: normal; font-weight: 300; font-display: swap; src: url("../vendor/fonts/inter-latin-300-normal.woff2") format("woff2"); unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD; }
 @font-face { font-family: "Inter"; font-style: normal; font-weight: 400; font-display: swap; src: url("../vendor/fonts/inter-latin-400-normal.woff2") format("woff2"); unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD; }
 
+/* meadow: the default. colours sampled from the picture. */
 :root {
-  --bg: #07090c;
-  --bg-deep: #040507;
-  --surface: #0c1016;
-  --surface-2: #11171f;
-  --line: rgba(190, 210, 230, 0.07);
-  --line-strong: rgba(190, 210, 230, 0.16);
-  --text: #d5dbe2;
-  --text-soft: #a4adb7;
-  --muted: #6f7984;
-  --dim: #414a54;
-  --accent: #9fd3ff;
-  --accent-soft: rgba(159, 211, 255, 0.12);
-  --accent-glow: rgba(159, 211, 255, 0.28);
-  --danger: #ff8a80;
-  --danger-soft: rgba(255, 138, 128, 0.12);
-  --radius: 3px;
+  --sky: #1c5b9c;            /* the open sky */
+  --sky-deep: #0d3a66;       /* sky in shadow; the darkest text */
+  --cascade: #eaf0f6;        /* the falling light */
+  --cloud: #f6f8fb;          /* cloud tops */
+  --field: #4f8f3f;          /* sunlit grass */
+  --field-deep: #2c5d2a;     /* the treeline */
+
+  --bg: #cfe0ef;
+  --bg-deep: rgba(255, 255, 255, 0.55);
+  --surface: rgba(255, 255, 255, 0.62);
+  --surface-2: rgba(255, 255, 255, 0.78);
+  --glass-blur: 18px;
+  --line: rgba(13, 58, 102, 0.10);
+  --line-strong: rgba(13, 58, 102, 0.22);
+  --text: #10283f;
+  --text-soft: #2f4c66;
+  --muted: #5c7690;
+  --dim: #8ea3b8;
+  --on-sky: #f6f8fb;         /* text laid directly on the picture's sky */
+  --on-sky-soft: rgba(246, 248, 251, 0.82);
+  --accent: #3f8a3a;
+  --accent-soft: rgba(63, 138, 58, 0.14);
+  --accent-glow: rgba(63, 138, 58, 0.32);
+  --danger: #b8402e;
+  --danger-soft: rgba(184, 64, 46, 0.12);
+  --shadow: 0 24px 60px -32px rgba(13, 58, 102, 0.45);
+  --radius: 10px;
+  --radius-sm: 7px;
   --gutter: 16px;
   --measure: 62ch;
   --font: "Inter", -apple-system, "SF Pro Text", "Helvetica Neue", "Segoe UI", Roboto, system-ui, sans-serif;
   --mono: "SF Mono", ui-monospace, Menlo, Consolas, "Liberation Mono", monospace;
   --ease: cubic-bezier(0.22, 0.61, 0.36, 1);
-  color-scheme: dark;
+  --drift: 90s;
+  color-scheme: light;
 }
 
-/* the console is dark by design; a light request still gets a readable page,
-   just with the same cold temperature */
-:root[data-theme="light"] {
-  --bg: #eef1f4;
-  --bg-deep: #e4e8ec;
-  --surface: #f7f9fb;
-  --surface-2: #ffffff;
-  --line: rgba(20, 30, 40, 0.08);
-  --line-strong: rgba(20, 30, 40, 0.18);
-  --text: #141a20;
-  --text-soft: #3a434c;
-  --muted: #6b7681;
-  --dim: #9aa4ae;
-  --accent: #1670b8;
-  --accent-soft: rgba(22, 112, 184, 0.10);
-  --accent-glow: rgba(22, 112, 184, 0.22);
-  color-scheme: light;
+/* night: the same picture at dusk, for dark rooms and low battery. the field
+   turns to shadow, the glass turns to smoke, the accent stays green. */
+:root[data-theme="night"] {
+  --bg: #0a1420;
+  --bg-deep: rgba(8, 16, 26, 0.72);
+  --surface: rgba(12, 24, 38, 0.66);
+  --surface-2: rgba(16, 30, 46, 0.82);
+  --line: rgba(200, 220, 240, 0.09);
+  --line-strong: rgba(200, 220, 240, 0.2);
+  --text: #e3ebf3;
+  --text-soft: #b7c6d6;
+  --muted: #7f95ab;
+  --dim: #4f6379;
+  --on-sky: #eef3f8;
+  --on-sky-soft: rgba(238, 243, 248, 0.78);
+  --accent: #7fc46f;
+  --accent-soft: rgba(127, 196, 111, 0.14);
+  --accent-glow: rgba(127, 196, 111, 0.3);
+  --danger: #ff9a8a;
+  --danger-soft: rgba(255, 154, 138, 0.14);
+  --shadow: 0 24px 60px -30px rgba(0, 0, 0, 0.7);
+  color-scheme: dark;
 }
 
 *, *::before, *::after { box-sizing: border-box; }
 
-html { -webkit-text-size-adjust: 100%; }
+html { -webkit-text-size-adjust: 100%; scrollbar-width: thin; scrollbar-color: rgba(13, 58, 102, 0.28) transparent; }
+:root[data-theme="night"] html, :root[data-theme="night"] { scrollbar-color: rgba(230, 240, 250, 0.28) transparent; }
+
+/* the scrollbar is a thread of the cascade: thin, pale, soft ends, no track */
+::-webkit-scrollbar { width: 7px; height: 7px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: rgba(13, 58, 102, 0.26); border-radius: 999px; border: 2px solid transparent; background-clip: padding-box; }
+::-webkit-scrollbar-thumb:hover { background: rgba(13, 58, 102, 0.42); background-clip: padding-box; }
+:root[data-theme="night"] ::-webkit-scrollbar-thumb { background: rgba(230, 240, 250, 0.28); background-clip: padding-box; }
 
 body {
   margin: 0;
@@ -63,20 +96,41 @@ body {
   font-family: var(--font);
   font-weight: 300;
   font-size: 16px;
-  line-height: 1.55;
-  letter-spacing: 0.005em;
+  line-height: 1.6;
+  letter-spacing: 0.004em;
   -webkit-font-smoothing: antialiased;
   overflow-x: hidden;
 }
 
+/* the picture, fixed behind everything. a fixed element instead of
+   background-attachment, which phones ignore. it breathes: a very slow scale,
+   and two sheets of mist drifting across at different speeds. */
+.bg { position: fixed; inset: 0; z-index: -1; overflow: hidden; background: var(--bg); }
+.bg .picture {
+  position: absolute; inset: -4%;
+  background: url("../img/meadow.webp") center 38% / cover no-repeat;
+  animation: breathe var(--drift) ease-in-out infinite alternate;
+  will-change: transform;
+}
+:root[data-theme="night"] .bg .picture { filter: brightness(0.42) saturate(0.85) hue-rotate(-6deg); }
+.bg .mist { position: absolute; inset: -20%; pointer-events: none; mix-blend-mode: screen; opacity: 0.55; }
+.bg .mist.one { background: radial-gradient(60% 40% at 30% 55%, rgba(255,255,255,0.35), transparent 70%); animation: drift-a calc(var(--drift) * 1.4) ease-in-out infinite alternate; }
+.bg .mist.two { background: radial-gradient(50% 35% at 70% 50%, rgba(255,255,255,0.28), transparent 70%); animation: drift-b calc(var(--drift) * 1.9) ease-in-out infinite alternate-reverse; }
+:root[data-theme="night"] .bg .mist { opacity: 0.25; }
+/* a scrim so the lower field never fights body text */
+.bg .scrim { position: absolute; inset: 0; background: linear-gradient(180deg, rgba(13,58,102,0.10) 0%, rgba(13,58,102,0) 30%, rgba(207,224,239,0.25) 70%, rgba(207,224,239,0.55) 100%); }
+:root[data-theme="night"] .bg .scrim { background: linear-gradient(180deg, rgba(0,0,0,0.15), rgba(10,20,32,0.55) 100%); }
+@keyframes breathe { from { transform: scale(1); } to { transform: scale(1.045); } }
+@keyframes drift-a { from { transform: translate3d(-3%, 1%, 0); } to { transform: translate3d(4%, -2%, 0); } }
+@keyframes drift-b { from { transform: translate3d(3%, -1%, 0); } to { transform: translate3d(-4%, 2%, 0); } }
+
 h1, h2, h3, h4 {
   font-weight: 200;
-  letter-spacing: -0.01em;
-  line-height: 1.15;
+  letter-spacing: -0.012em;
+  line-height: 1.12;
   margin: 0;
   color: var(--text);
 }
-
 h1 { font-size: clamp(2.4rem, 6vw, 4.6rem); }
 h2 { font-size: clamp(1.5rem, 3vw, 2.2rem); }
 h3 { font-size: 1.15rem; font-weight: 300; }
@@ -84,49 +138,58 @@ h3 { font-size: 1.15rem; font-weight: 300; }
 p { margin: 0 0 1em; max-width: var(--measure); color: var(--text-soft); }
 p:last-child { margin-bottom: 0; }
 
-a { color: inherit; text-decoration: none; border-bottom: 1px solid var(--line-strong); transition: border-color 200ms var(--ease), color 200ms var(--ease); }
+a { color: inherit; text-decoration: none; border-bottom: 1px solid var(--line-strong); transition: border-color 260ms var(--ease), color 260ms var(--ease); }
 a:hover { color: var(--accent); border-color: var(--accent); }
 
 code, .mono { font-family: var(--mono); font-size: 0.86em; letter-spacing: 0.02em; }
 
 button, input, textarea, select { font: inherit; color: inherit; }
 
+/* glass: the material of every surface */
+.glass, .card, .item-row, .top, .appbar, .sidenav, .overlay .box, .toast, .callpanel, .bubble, .empty, .codebox, .pairdemo {
+  backdrop-filter: blur(var(--glass-blur)) saturate(140%);
+  -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(140%);
+}
+
 button {
   cursor: pointer;
-  background: transparent;
+  background: rgba(255, 255, 255, 0.35);
   border: 1px solid var(--line-strong);
-  border-radius: var(--radius);
-  padding: 0.7rem 1.2rem;
+  border-radius: 999px;
+  padding: 0.7rem 1.25rem;
   color: var(--text);
   letter-spacing: 0.02em;
-  transition: border-color 220ms var(--ease), background 220ms var(--ease), color 220ms var(--ease), transform 160ms var(--ease);
+  transition: border-color 260ms var(--ease), background 260ms var(--ease), color 260ms var(--ease), transform 200ms var(--ease), box-shadow 260ms var(--ease);
   min-height: 44px;
 }
-button:hover { border-color: var(--text-soft); }
+:root[data-theme="night"] button { background: rgba(255, 255, 255, 0.06); }
+button:hover { border-color: var(--text-soft); background: rgba(255, 255, 255, 0.55); }
+:root[data-theme="night"] button:hover { background: rgba(255, 255, 255, 0.12); }
 button:active { transform: translateY(1px); }
-button:disabled { opacity: 0.4; cursor: default; transform: none; }
-button.primary { border-color: var(--text); }
-button.primary:hover { background: var(--text); color: var(--bg); }
-button.accent { border-color: var(--accent); color: var(--accent); }
-button.accent:hover { background: var(--accent-soft); }
-button.ghost { border-color: transparent; color: var(--muted); padding-inline: 0.6rem; }
-button.ghost:hover { color: var(--text); }
-button.danger { border-color: var(--danger); color: var(--danger); }
+button:disabled { opacity: 0.45; cursor: default; transform: none; }
+button.primary { background: var(--sky-deep); border-color: var(--sky-deep); color: var(--cloud); }
+button.primary:hover { background: var(--sky); border-color: var(--sky); }
+:root[data-theme="night"] button.primary { background: var(--cloud); border-color: var(--cloud); color: var(--sky-deep); }
+button.accent { border-color: var(--accent); color: var(--accent); background: var(--accent-soft); }
+button.accent:hover { box-shadow: 0 0 0 4px var(--accent-soft); }
+button.ghost { border-color: transparent; background: transparent; color: var(--muted); padding-inline: 0.7rem; }
+button.ghost:hover { color: var(--text); background: rgba(255, 255, 255, 0.3); }
+button.danger { border-color: var(--danger); color: var(--danger); background: transparent; }
 button.danger:hover { background: var(--danger-soft); }
-button.small { min-height: 34px; padding: 0.35rem 0.8rem; font-size: 0.9rem; }
+button.small { min-height: 34px; padding: 0.35rem 0.9rem; font-size: 0.9rem; }
 
 input[type="text"], input[type="password"], input[type="number"], textarea, select {
   width: 100%;
   background: var(--bg-deep);
   border: 1px solid var(--line-strong);
-  border-radius: var(--radius);
-  padding: 0.75rem 0.9rem;
+  border-radius: var(--radius-sm);
+  padding: 0.75rem 0.95rem;
   color: var(--text);
   outline: none;
-  transition: border-color 200ms var(--ease), box-shadow 200ms var(--ease);
+  transition: border-color 220ms var(--ease), box-shadow 220ms var(--ease), background 220ms var(--ease);
   min-height: 44px;
 }
-input:focus, textarea:focus, select:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+input:focus, textarea:focus, select:focus { border-color: var(--sky); box-shadow: 0 0 0 4px rgba(28, 91, 156, 0.14); background: var(--surface-2); }
 textarea { resize: vertical; min-height: 120px; line-height: 1.5; }
 ::placeholder { color: var(--dim); }
 
@@ -145,10 +208,12 @@ label { display: block; color: var(--muted); font-size: 0.85rem; letter-spacing:
 
 .pill {
   display: inline-flex; align-items: center; gap: 0.5rem; white-space: nowrap;
-  padding: 0.3rem 0.7rem; border-radius: 999px;
+  padding: 0.3rem 0.75rem; border-radius: 999px;
   border: 1px solid var(--line-strong); color: var(--muted); font-size: 0.8rem; letter-spacing: 0.03em;
+  background: rgba(255, 255, 255, 0.3);
 }
-.pill::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: var(--dim); transition: background 400ms var(--ease), box-shadow 400ms var(--ease); }
+:root[data-theme="night"] .pill { background: rgba(255, 255, 255, 0.05); }
+.pill::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: var(--dim); transition: background 500ms var(--ease), box-shadow 500ms var(--ease); }
 .pill.on { color: var(--accent); border-color: var(--accent); }
 .pill.on::before { background: var(--accent); box-shadow: 0 0 10px var(--accent-glow); }
 .pill.warn { color: var(--danger); border-color: var(--danger); }
@@ -156,18 +221,20 @@ label { display: block; color: var(--muted); font-size: 0.85rem; letter-spacing:
 
 .card {
   background: var(--surface);
-  border: 1px solid var(--line);
+  border: 1px solid rgba(255, 255, 255, 0.55);
   border-radius: var(--radius);
   padding: 1.4rem;
+  box-shadow: var(--shadow);
 }
-.card.trust { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent-soft), 0 0 40px -20px var(--accent-glow); }
+:root[data-theme="night"] .card { border-color: var(--line); }
+.card.trust { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent-soft), var(--shadow); }
 
 .divider { height: 1px; background: var(--line); margin: 2rem 0; }
 
 .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
 
-/* reveal on scroll / on mount */
-html.js .reveal { opacity: 0; transform: translateY(10px); transition: opacity 800ms var(--ease), transform 800ms var(--ease); transition-delay: calc(var(--i, 0) * 90ms); }
+/* reveal: things arrive the way the walker does, slowly and from below */
+html.js .reveal { opacity: 0; transform: translateY(12px); transition: opacity 1000ms var(--ease), transform 1000ms var(--ease); transition-delay: calc(var(--i, 0) * 110ms); }
 html.js .reveal.in { opacity: 1; transform: none; }
 
 /* code block for pairing / transfer text */
@@ -179,7 +246,7 @@ html.js .reveal.in { opacity: 1; transform: none; }
   word-break: break-all;
   background: var(--bg-deep);
   border: 1px solid var(--line);
-  border-radius: var(--radius);
+  border-radius: var(--radius-sm);
   padding: 0.9rem 1rem;
   color: var(--text-soft);
   user-select: all;
@@ -190,9 +257,9 @@ html.js .reveal.in { opacity: 1; transform: none; }
   display: inline-block;
   padding: 12px;
   background: #f4f6f8;
-  border-radius: 4px;
+  border-radius: 8px;
   line-height: 0;
-  box-shadow: 0 30px 60px -30px rgba(0, 0, 0, 0.9);
+  box-shadow: var(--shadow);
 }
 
 .sas {
@@ -210,36 +277,40 @@ html.js .reveal.in { opacity: 1; transform: none; }
 .toast {
   position: fixed; left: 50%; bottom: calc(var(--gutter) + env(safe-area-inset-bottom));
   transform: translate(-50%, 20px);
-  background: var(--surface-2); border: 1px solid var(--line-strong);
-  color: var(--text); padding: 0.7rem 1.1rem; border-radius: var(--radius);
+  background: var(--surface-2); border: 1px solid rgba(255, 255, 255, 0.6);
+  color: var(--text); padding: 0.7rem 1.1rem; border-radius: 999px;
   font-size: 0.9rem; opacity: 0; pointer-events: none; z-index: 50;
-  transition: opacity 250ms var(--ease), transform 250ms var(--ease);
+  transition: opacity 300ms var(--ease), transform 300ms var(--ease);
   max-width: min(90vw, 480px);
+  box-shadow: var(--shadow);
 }
+:root[data-theme="night"] .toast { border-color: var(--line-strong); }
 .toast.show { opacity: 1; transform: translate(-50%, 0); }
 .toast.error { border-color: var(--danger); color: var(--danger); }
 .toast.ok { border-color: var(--accent); }
 
-/* signal rings: the only moving thing on an idle screen */
+/* signal rings: the only deliberate motion on an idle screen, in the pale of
+   the cascade until a trust state turns them field green */
 .signal { position: absolute; inset: 0; pointer-events: none; overflow: hidden; }
 .signal svg { position: absolute; left: 50%; top: 50%; width: min(140vw, 1400px); height: auto; transform: translate(-50%, -50%); }
-.signal circle { fill: none; stroke: var(--line-strong); stroke-width: 1.1; transform-origin: center; transform-box: fill-box; animation: ring 9s linear infinite; opacity: 0; }
+.signal circle { fill: none; stroke: rgba(255, 255, 255, 0.55); stroke-width: 1.1; transform-origin: center; transform-box: fill-box; animation: ring 12s linear infinite; opacity: 0; }
 .signal[data-trust="true"] circle { stroke: var(--accent); }
-.signal circle:nth-child(2) { animation-delay: -3s; }
-.signal circle:nth-child(3) { animation-delay: -6s; }
+.signal circle:nth-child(2) { animation-delay: -4s; }
+.signal circle:nth-child(3) { animation-delay: -8s; }
 @keyframes ring {
   0% { transform: scale(0.15); opacity: 0; }
-  10% { opacity: 0.8; }
+  10% { opacity: 0.7; }
   100% { transform: scale(1); opacity: 0; }
 }
 
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: 0.001ms !important; animation-iteration-count: 1 !important; transition-duration: 0.001ms !important; }
-  .reveal { opacity: 1; transform: none; }
+  html.js .reveal { opacity: 1; transform: none; }
   .signal circle { opacity: 0.25; transform: scale(0.6); }
+  .bg .picture, .bg .mist { animation: none; }
 }
 
 @media print {
   [data-shielded] { visibility: hidden !important; }
-  .veil, .toast { display: none !important; }
+  .veil, .toast, .bg { display: none !important; }
 }

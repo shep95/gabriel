@@ -10,6 +10,7 @@ export const DEFAULT_SETTINGS = {
   beaconPassword: '',
   beaconAuto: false,
   iceServers: '',             // optional stun/turn urls, one per line, off by default
+  theme: 'meadow',            // 'meadow' (the picture in daylight) | 'night'
 };
 
 export const state = {

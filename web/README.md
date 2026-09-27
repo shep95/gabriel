@@ -40,6 +40,15 @@ installs a service worker and keeps working with the network off.
   sealed notes, sealed backup and import, passphrase change, auto-lock, erase.
 - **installable from the web** on ios, android, macos, windows and linux browsers.
 
+## look
+
+the interface is read from one picture (`img/meadow.webp`): a cobalt sky, a
+cascade of silver light falling into cloud, a green field, one person walking.
+surfaces are frosted glass so the picture stays visible; text is the sky's
+shadow; the single accent is field green and appears only at trust states;
+motion is a slow drift (the picture breathes, two sheets of mist cross it)
+and stops entirely under reduced-motion. a dusk variant is in settings.
+
 ## layout
 
 ```
