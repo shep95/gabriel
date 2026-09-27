@@ -18,6 +18,9 @@ in its loopback dev mode (`node beacon/server.mjs --dev-http`), which serves
 - sends a message containing markup and proves it renders as text
 - opens a direct chat from the devices list, messages both ways, and connects a
   one-to-one call
+- sends a photo (re-encoded, bounded, shielded on arrival), a 700 kb file in
+  nine sealed parts (checked byte for byte by hash) and a recorded voice clip
+- locks and unlocks with the on-page keyboard, and checks the layout shuffles
 - removes a member, rotates the key, and proves the removed member sees nothing new
 - asserts that no request ever left the origin
 
@@ -41,6 +44,18 @@ heading, and reports every problem from one run.
 node web/tests/sweep.mjs
 ```
 
-both need the `playwright` package (a global install is found automatically)
+`perf.mjs` measures what a person feels and holds it to a budget: bytes and
+requests on a cold landing load, first and largest paint, load from the
+offline cache, the share of the still frame rate kept while the sky moves and
+while a section is read, key derivation and unlock (also under a 4x cpu
+throttle), route switches, idle main-thread cost, pairing, beacon connection,
+message latency between two devices through the relay (first, median, p95),
+hold-to-reveal latency, a photo and a 700 kb file end to end, and call setup.
+
+```
+node web/tests/perf.mjs
+```
+
+all three need the `playwright` package (a global install is found automatically)
 and a chromium it can launch. screenshots land in `web/tests/shots/` (ignored
 by git).

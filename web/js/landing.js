@@ -12,6 +12,19 @@ function reveal() {
     for (const en of entries) if (en.isIntersecting) { en.target.classList.add('in'); io.unobserve(en.target); }
   }, { rootMargin: '0px 0px -8% 0px', threshold: 0.05 });
   els.forEach((e) => io.observe(e));
+  // the sky and the rings move while the hero is in view and rest once the
+  // reader has moved on to the glass sheets
+  const hero = document.querySelector('.hero');
+  if (!hero) return;
+  const sky = new IntersectionObserver(([en]) => {
+    const seen = en.isIntersecting;
+    document.documentElement.classList.toggle('sky-moving', seen);
+    hero.classList.toggle('resting', !seen);
+  }, { threshold: 0.12 });
+  sky.observe(hero);
+  // the pairing demonstration moves only while it is on screen
+  const demo = document.getElementById('pairdemo');
+  if (demo) new IntersectionObserver(([en]) => demo.classList.toggle('live', en.isIntersecting), { threshold: 0.2 }).observe(demo);
 }
 
 // the header takes its glass once the hero has passed under it; the phone

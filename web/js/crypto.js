@@ -309,6 +309,47 @@ export async function sealMessage(pairKey, senderFpHex, recipientFpHex, payload)
   return { id: body.id, text: `${ENVELOPE_PREFIX}-${b32.encode(bytes)}` };
 }
 
+// a direct frame: the pair-key sealing of a transfer code, but base64url and
+// without the code's size cap. media rides the pair channel in these; the
+// derivation label and the additional data keep it a separate protocol from
+// the codes a person reads off a screen.
+export const FRAME_PREFIX = 'GBR4';
+const FRAME_VERSION = 1;
+const PROTO_FRAME = utf8.encode('gabriel/direct-frame/v1');
+const MAX_FRAME_BYTES = 200_000;
+function frameAad(senderFpHex, recipientFpHex) {
+  return concat(PROTO_FRAME, hex.decode(senderFpHex), hex.decode(recipientFpHex));
+}
+export async function sealDirectFrame(pairKey, senderFpHex, recipientFpHex, payload) {
+  const body = { v: 1, id: uuid(), ts: new Date().toISOString(), ...payload };
+  const pt = utf8.encode(JSON.stringify(body));
+  if (pt.length > MAX_FRAME_BYTES - 64) throw new Error(`frame too large (${pt.length} bytes)`);
+  const salt = randomBytes(16);
+  const iv = randomBytes(12);
+  const keyBytes = await hkdf(pairKey, salt, PROTO_FRAME, 32);
+  const key = await subtle.importKey('raw', keyBytes, 'AES-GCM', false, ['encrypt']);
+  const ct = new Uint8Array(await subtle.encrypt({ name: 'AES-GCM', iv, additionalData: frameAad(senderFpHex, recipientFpHex) }, key, pt));
+  const bytes = concat(new Uint8Array([FRAME_VERSION]), hex.decode(senderFpHex.slice(0, 8)), salt, iv, ct);
+  return { id: body.id, text: `${FRAME_PREFIX}-${b64url.encode(bytes)}` };
+}
+export function isDirectFrame(text) { return typeof text === 'string' && text.startsWith(`${FRAME_PREFIX}-`); }
+export async function openDirectFrame(pairKey, senderFpHex, recipientFpHex, text) {
+  if (!isDirectFrame(text)) throw new Error('not a direct frame');
+  const bytes = b64url.decode(text.slice(FRAME_PREFIX.length + 1));
+  if (bytes.length < 1 + 4 + 16 + 12 + 16 || bytes.length > MAX_FRAME_BYTES + 64) throw new Error('bad frame size');
+  if (bytes[0] !== FRAME_VERSION) throw new Error('unknown frame version');
+  if (!senderFpHex.startsWith(hex.encode(bytes.slice(1, 5)))) throw new Error('frame is not from this device');
+  const salt = bytes.slice(5, 21);
+  const iv = bytes.slice(21, 33);
+  const ct = bytes.slice(33);
+  const keyBytes = await hkdf(pairKey, salt, PROTO_FRAME, 32);
+  const key = await subtle.importKey('raw', keyBytes, 'AES-GCM', false, ['decrypt']);
+  const pt = await subtle.decrypt({ name: 'AES-GCM', iv, additionalData: frameAad(senderFpHex, recipientFpHex) }, key, ct);
+  const body = JSON.parse(utf8.decode(new Uint8Array(pt)));
+  if (body.v !== 1 || typeof body.id !== 'string' || typeof body.kind !== 'string') throw new Error('malformed frame body');
+  return body;
+}
+
 export function parseEnvelopeHeader(text) {
   const clean = text.trim().toUpperCase().replace(/\s+/g, '');
   if (!clean.startsWith(ENVELOPE_PREFIX)) throw new Error('not a transfer code');

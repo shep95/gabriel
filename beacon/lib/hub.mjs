@@ -22,7 +22,7 @@ export const defaults = {
   maxSubs: 64,
   pubRate: 30,
   pubBurst: 60,
-  bytesPerMin: 4 * 1024 * 1024,
+  bytesPerMin: 8 * 1024 * 1024,   // a 1.5 mb photo or file is thirteen frames; two a minute must fit
   maxViolations: 10,
   maxData: 200_000,
   maxFrame: 256 * 1024,

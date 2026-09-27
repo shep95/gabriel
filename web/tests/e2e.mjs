@@ -10,6 +10,7 @@
 //   6. no request ever leaves the origin
 
 import { spawn, execSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { pathToFileURL } from 'node:url';
 
 // prefer a local install; fall back to the global one (esm ignores NODE_PATH)
@@ -47,8 +48,8 @@ async function serve() {
 
 const openPages = [];
 async function newDevice(browser, name, offOrigin) {
-  const context = await browser.newContext({ viewport: { width: 390, height: 844 }, deviceScaleFactor: 2, colorScheme: 'dark', permissions: ['geolocation', 'microphone', 'camera'], geolocation: { latitude: 51.5007, longitude: -0.1246, accuracy: 12 } });
-  context.on('request', (req) => { if (!req.url().startsWith(ORIGIN)) offOrigin.push(req.url()); });
+  const context = await browser.newContext({ viewport: { width: 390, height: 844 }, deviceScaleFactor: 2, colorScheme: 'dark', permissions: ['geolocation', 'microphone', 'camera'], geolocation: { latitude: 51.5007, longitude: -0.1246, accuracy: 12 }, acceptDownloads: true });
+  context.on('request', (req) => { const u = req.url(); if (!u.startsWith(ORIGIN) && !u.startsWith(`blob:${ORIGIN}`)) offOrigin.push(u); });
   const page = await context.newPage();
   page.on('pageerror', (e) => { console.error(`${name} page error:`, e.message); });
   page.on('console', (m) => { if (m.type() === 'error') console.error(`${name} console:`, m.text()); });
@@ -355,6 +356,78 @@ async function main() {
     await B.page.waitForFunction(() => !document.querySelector('.callpanel .who')?.textContent.includes('connected'), null, { timeout: 15000 });
     await B.page.click('#room-call');
     log('direct chat: messages both ways and a one-to-one call connected');
+
+    // media over the pair channel: a photo (re-encoded, exif gone, bounded), a
+    // file too large for one frame (chunked, byte-exact), a voice clip
+    const png = await A.page.evaluate(async () => {
+      const c = document.createElement('canvas'); c.width = 2400; c.height = 1600;
+      const x = c.getContext('2d');
+      const g = x.createLinearGradient(0, 0, 2400, 1600); g.addColorStop(0, '#1c5b9c'); g.addColorStop(1, '#e0a262');
+      x.fillStyle = g; x.fillRect(0, 0, 2400, 1600);
+      for (let i = 0; i < 1200; i++) { x.fillStyle = `hsl(${(i * 7) % 360} 70% 60%)`; x.fillRect((i * 373) % 2400, (i * 199) % 1600, 40, 40); }
+      const b = await new Promise((r) => c.toBlob(r, 'image/png'));
+      return new Promise((r) => { const fr = new FileReader(); fr.onload = () => r(fr.result.split(',')[1]); fr.readAsDataURL(b); });
+    });
+    const t0 = Date.now(); // the clock starts when the picker hands the file over
+    await A.page.setInputFiles('#attach-input', { name: 'meadow.png', mimeType: 'image/png', buffer: Buffer.from(png, 'base64') });
+    await B.page.waitForSelector('.bubble.media img', { timeout: 30000 });
+    const photo = await B.page.$eval('.bubble.media img', (img) => new Promise((r) => { const done = () => r({ w: img.naturalWidth, h: img.naturalHeight, shielded: img.hasAttribute('data-shielded'), blur: getComputedStyle(img).filter }); if (img.complete && img.naturalWidth) done(); else img.onload = done; }));
+    assert(photo.w > 0 && photo.w <= 1600 && photo.h <= 1600, `photo re-encoded within bounds, got ${photo.w}x${photo.h}`);
+    assert(photo.shielded && /blur/.test(photo.blur), 'received photo is shielded (blurred until held)');
+    const photoMeta = await B.page.$eval('.bubble.media .media-meta', (m) => m.textContent);
+    assert(/photo/.test(photoMeta), 'photo bubble labelled');
+    const photoMs = Date.now() - t0;
+
+    const fileBytes = Buffer.alloc(700 * 1024); for (let i = 0; i < fileBytes.length; i++) fileBytes[i] = (i * 2654435761 >>> 24) & 0xff;
+    const fileHash = createHash('sha256').update(fileBytes).digest('hex');
+    const t1 = Date.now();
+    await A.page.setInputFiles('#attach-input', { name: 'survey.bin', mimeType: 'application/octet-stream', buffer: fileBytes });
+    await B.page.waitForSelector('.bubble.media a.media-file', { timeout: 60000 });
+    // "tap to save" is the real path (the page's csp forbids fetching blobs, on purpose)
+    const [dl] = await Promise.all([B.page.waitForEvent('download', { timeout: 15000 }), B.page.click('.bubble.media a.media-file')]);
+    const savedPath = await dl.path();
+    const saved = fs.readFileSync(savedPath);
+    const got = { size: saved.length, hash: createHash('sha256').update(saved).digest('hex'), name: dl.suggestedFilename(), label: await B.page.$eval('.bubble.media a.media-file', (a) => a.textContent) };
+    assert(got.size === fileBytes.length && got.hash === fileHash, `700 kb file arrives byte-exact in ${Math.ceil(fileBytes.length / (84 * 1024))} parts`);
+    assert(got.name === 'survey.bin' && /700 kb/.test(got.label), `file name and size shown (${got.name}, ${got.label})`);
+    const fileMs = Date.now() - t1;
+
+    const t2 = Date.now();
+    const micBox = await A.page.$('#mic');
+    assert(micBox && !(await A.page.$eval('#mic', (m) => m.hidden)), 'voice clip control present');
+    const mb = await micBox.boundingBox();
+    await A.page.mouse.move(mb.x + mb.width / 2, mb.y + mb.height / 2);
+    await A.page.mouse.down();
+    await A.page.waitForFunction(() => /recording/.test(document.querySelector('#send-status')?.textContent || ''), null, { timeout: 5000 });
+    await A.page.waitForTimeout(1500);
+    await A.page.mouse.up();
+    await B.page.waitForSelector('.bubble.media audio', { timeout: 30000 });
+    const clip = await B.page.$eval('.bubble.media .media-audio .media-meta', (m) => m.textContent);
+    assert(/voice/.test(clip), `voice clip labelled (${clip})`);
+    const voiceMs = Date.now() - t2;
+    log(`media: photo ${photoMs} ms, 700 kb file ${fileMs} ms, voice clip ${voiceMs} ms, all sealed, file byte-exact`);
+
+    // the on-page keyboard: a passphrase typed without the system keyboard
+    await A.page.click('#lock-btn');
+    await A.page.waitForSelector('#unlock-form');
+    await A.page.click('#u-quiet');
+    await A.page.waitForSelector('.keypad');
+    const layout1 = await A.page.$$eval('.keypad .row:nth-child(2) .k', (ks) => ks.map((k) => k.dataset.k).join(''));
+    for (const ch of 'correct horse battery') await A.page.click(`.keypad .k[data-k="${ch}"]`);
+    assert(await A.page.$eval('#u-pass', (i) => i.readOnly && i.getAttribute('inputmode') === 'none'), 'system keyboard is kept down while the on-page keyboard is open');
+    await A.page.click('.keypad .k[data-k="done"]');
+    await A.page.waitForSelector('.sidenav', { timeout: 60000 });
+    await A.page.click('#lock-btn');
+    await A.page.waitForSelector('#unlock-form');
+    await A.page.click('#u-quiet');
+    const layout2 = await A.page.$$eval('.keypad .row:nth-child(2) .k', (ks) => ks.map((k) => k.dataset.k).join(''));
+    assert(layout1 !== layout2, 'the on-page keyboard shuffles between openings');
+    await A.page.click('#u-quiet');
+    await unlock(A.page, 'correct horse battery');
+    await A.page.click('a[data-route="rooms"]');
+    await A.page.click('a[href^="#/rooms/dm:"]');
+    await A.page.waitForSelector('#compose');
+    log('on-page keyboard: unlocked with a shuffled keypad, layout differs each time');
 
     // back to the room for the rotation check
     await A.page.click('a[data-route="rooms"]');

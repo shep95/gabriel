@@ -27,10 +27,19 @@ installs a service worker and keeps working with the network off.
   one or in a room, are a webrtc mesh (up to eight) signalled inside sealed
   messages of that conversation; media goes straight between phones on the
   local network with no stun or turn unless the person adds servers.
-- **shield.** messages blur until pressed and held; the app veils itself when
-  it is not in front; shielded text cannot be selected, copied or dragged. a
-  page cannot prevent the operating system from capturing the screen, and the
-  setting says so.
+- **photos, voice clips and files** in any conversation. a photo is re-encoded
+  before it leaves, which strips camera, time and location metadata and bounds
+  its size; a voice clip is recorded on the page; anything up to 1.5 mb goes
+  in sealed parts of 84 kb so every frame stays under the relay's limit, and
+  is checked to the byte on arrival. media arrives shielded like text.
+- **shield.** messages and photos blur until pressed and held, one at a time
+  and for at most eight seconds; the app veils itself when it is not in front;
+  shielded text cannot be selected, copied or dragged. a page cannot prevent
+  the operating system from capturing the screen, and the setting says so.
+- **an on-page keyboard**, shuffled each time it opens, for the passphrase and,
+  if chosen, for every message and note: what is typed on it never passes
+  through the system keyboard, so a keyboard app or a keystroke logger on the
+  device sees nothing. the composer also never hands text to cloud spell-check.
 - **notifications that name the sender, never the content** (or only a dot, or
   nothing). no push server: they fire while the console is open or backgrounded.
 - **location only on request.** share once or live inside a room; recipients get
@@ -75,7 +84,7 @@ web/
   js/beacon.js          websocket client for the relay
   js/rooms.js           room lifecycle, roster, epoch keys, message seal/open
   js/calls.js           webrtc mesh with perfect negotiation
-  js/notify.js  js/shield.js  js/install.js  js/geo.js
+  js/notify.js  js/shield.js  js/install.js  js/geo.js  js/keypad.js
   js/qr.js  js/scan.js  qr rendering and camera scanning
   js/status.js          worker registration and offline readiness probes
   js/landing.js  js/app.js

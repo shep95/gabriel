@@ -13,6 +13,8 @@ import { state } from './state.js';
 
 let veil = null;
 let holdTimer = null;
+let revealTimer = null;
+const REVEAL_MAX_MS = 8000; // a held message blurs again on its own
 
 export function shieldEnabled() { return !!state.settings.shield; }
 
@@ -38,10 +40,18 @@ export function installShield() {
     if (e.pointerType === 'mouse' && e.button !== 0) return;
     e.preventDefault();
     clearTimeout(holdTimer);
-    holdTimer = setTimeout(() => { el.classList.add('revealed'); }, 180);
+    holdTimer = setTimeout(() => {
+      // one message at a time, and never for long: a recording taken frame by
+      // frame gets one message, for at most eight seconds
+      document.querySelectorAll('[data-shielded].revealed').forEach((o) => { if (o !== el) o.classList.remove('revealed'); });
+      el.classList.add('revealed');
+      clearTimeout(revealTimer);
+      revealTimer = setTimeout(() => el.classList.remove('revealed'), REVEAL_MAX_MS);
+    }, 180);
   });
   const release = () => {
     clearTimeout(holdTimer);
+    clearTimeout(revealTimer);
     document.querySelectorAll('[data-shielded].revealed').forEach((el) => {
       // linger a moment so a slip of the finger does not re-blur mid-word
       setTimeout(() => el.classList.remove('revealed'), 400);

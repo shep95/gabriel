@@ -10,6 +10,7 @@ import { b64url, uuid, nowIso, cleanName } from './util.js';
 import {
   inboxTag, dayString, newRoomKey, newRoomId, roomTag, sealRoomMessage, openRoomMessage,
   sealMessage, parseEnvelopeHeader, openMessage, sealRecord, openRecord,
+  sealDirectFrame, openDirectFrame, isDirectFrame,
 } from './crypto.js';
 import * as db from './db.js';
 import { state, emit, on } from './state.js';
@@ -18,6 +19,17 @@ import { beacon, subscribe, unsubscribe, publish } from './beacon.js';
 const MAX_MEMBERS = 24;
 const MAX_HISTORY = 500;
 const MAX_TEXT = 4000;
+// media: photos, voice clips, small files. sealed like any message, carried in
+// parts so every frame stays under the relay's limit; a part is base64url of a
+// slice whose length is a multiple of three, so the parts join back into one
+// valid string without decoding each.
+export const MAX_MEDIA_BYTES = 1_500_000;
+const MEDIA_CHUNK = 84 * 1024;
+const MAX_MEDIA_PARTS = Math.ceil(MAX_MEDIA_BYTES / MEDIA_CHUNK);
+const MAX_MEDIA_PENDING = 8;          // half-received media per conversation
+const MEDIA_PENDING_MS = 10 * 60_000;
+const MIME = /^[a-z0-9!#$&^_.+-]{1,40}\/[a-z0-9!#$&^_.+-]{1,80}$/i;
+const B64URL = /^[A-Za-z0-9_-]*$/;
 const MAX_EPOCH = 1_000_000;
 const ROOM_ID = /^[0-9a-f]{16}$/;
 const FP = /^[0-9a-f]{64}$/;
@@ -149,9 +161,10 @@ export function deviceForDm(convId) {
   return state.devices.find((d) => d.id === convId.slice(3)) || null;
 }
 
-async function sendDirect(dev, payload, keep = true) {
+async function sendDirect(dev, payload, keep = true, large = false) {
   if (!isKey32(dev.pairKey)) throw new Error('this pairing is unusable; pair again');
-  const env = await sealMessage(b64url.decode(dev.pairKey), state.identity.fingerprint, dev.fingerprint, payload);
+  const seal = large ? sealDirectFrame : sealMessage;
+  const env = await seal(b64url.decode(dev.pairKey), state.identity.fingerprint, dev.fingerprint, payload);
   const tag = await inboxTag(b64url.decode(dev.pairKey));
   await publish(tag, env.text, keep);
   return env;
@@ -179,12 +192,16 @@ async function touchDevice(dev) {
 }
 
 async function handleDirect(dev, text) {
-  let header;
-  try { header = parseEnvelopeHeader(text); } catch { return; }
-  if (!dev.fingerprint.startsWith(header.senderFpPrefix)) return;
   let body;
-  try { body = await openMessage(b64url.decode(dev.pairKey), dev.fingerprint, state.identity.fingerprint, header); }
-  catch { return; }
+  if (isDirectFrame(text)) {
+    try { body = await openDirectFrame(b64url.decode(dev.pairKey), dev.fingerprint, state.identity.fingerprint, text); } catch { return; }
+  } else {
+    let header;
+    try { header = parseEnvelopeHeader(text); } catch { return; }
+    if (!dev.fingerprint.startsWith(header.senderFpPrefix)) return;
+    try { body = await openMessage(b64url.decode(dev.pairKey), dev.fingerprint, state.identity.fingerprint, header); }
+    catch { return; }
+  }
   if (!UUID.test(body.id)) return;
   const seenKey = `dev|${dev.id}|${body.id}`;
   if (await db.get('seen', seenKey)) return;
@@ -204,9 +221,92 @@ async function handleDirect(dev, text) {
     }
     case 'call':
       return emit('room:call', { roomId: dmId(dev), msg: { ...body, fp: dev.fingerprint }, sender });
+    case 'media':
+      return acceptMediaPart(dmId(dev), body, dev.fingerprint, { sender, replay: false, afterStore: () => touchDevice(dev) });
     default:
       return undefined;
   }
+}
+
+// ---------- media ----------
+
+const mediaPending = new Map(); // `${convId}|${mediaId}` -> { meta, fp, parts, got, at }
+
+function validMediaPart(m) {
+  return UUID.test(m.mediaId)
+    && Number.isInteger(m.parts) && m.parts >= 1 && m.parts <= MAX_MEDIA_PARTS
+    && Number.isInteger(m.part) && m.part >= 0 && m.part < m.parts
+    && Number.isInteger(m.size) && m.size >= 1 && m.size <= MAX_MEDIA_BYTES && m.size <= m.parts * MEDIA_CHUNK && m.size > (m.parts - 1) * MEDIA_CHUNK
+    && typeof m.data === 'string' && m.data.length <= Math.ceil((MEDIA_CHUNK * 4) / 3) + 4 && B64URL.test(m.data)
+    && typeof m.mime === 'string' && MIME.test(m.mime)
+    && typeof m.name === 'string' && m.name.length <= 120;
+}
+function mediaMeta(m) {
+  const out = { name: cleanName(m.name, 80) || 'file', mime: m.mime.toLowerCase(), size: m.size, parts: m.parts };
+  if (Number.isFinite(m.duration) && m.duration > 0 && m.duration <= 3600) out.duration = Math.round(m.duration * 10) / 10;
+  if (Number.isInteger(m.width) && Number.isInteger(m.height) && m.width > 0 && m.height > 0 && m.width <= 8192 && m.height <= 8192) { out.width = m.width; out.height = m.height; }
+  return out;
+}
+function pendingIn(convId) { let n = 0; for (const k of mediaPending.keys()) if (k.startsWith(`${convId}|`)) n++; return n; }
+setInterval(() => {
+  const cutoff = Date.now() - MEDIA_PENDING_MS;
+  for (const [k, p] of mediaPending) if (p.at < cutoff || !state.vaultKey) mediaPending.delete(k);
+}, 60_000);
+
+async function acceptMediaPart(convId, m, fp, { sender, replay, afterStore }) {
+  if (!validMediaPart(m)) return;
+  const key = `${convId}|${m.mediaId}`;
+  let p = mediaPending.get(key);
+  if (!p) {
+    if (pendingIn(convId) >= MAX_MEDIA_PENDING) return;
+    p = { meta: mediaMeta(m), fp, parts: new Array(m.parts).fill(null), got: 0, at: Date.now() };
+    mediaPending.set(key, p);
+  }
+  if (p.fp !== fp || p.meta.parts !== m.parts || p.meta.size !== m.size) return;
+  if (p.parts[m.part] === null) { p.parts[m.part] = m.data; p.got++; p.at = Date.now(); }
+  emit('media:progress', { roomId: convId, mediaId: m.mediaId, got: p.got, parts: m.parts, meta: p.meta, sender });
+  if (p.got < m.parts) return;
+  mediaPending.delete(key);
+  const data = p.parts.join('');
+  let length;
+  try { length = b64url.decode(data).length; } catch { return; }
+  if (length !== p.meta.size) return;
+  const rx = nowIso();
+  const { parts, ...meta } = p.meta;
+  const msg = { id: m.mediaId, fp, kind: 'media', ts: acceptedTs(m.ts, rx), rx, ...meta, data };
+  await storeMessage(convId, msg);
+  if (afterStore) await afterStore();
+  emit('room:message', { roomId: convId, msg, mine: false, replay, sender });
+}
+
+// send a photo, a clip or a file to a room or a direct chat. `media` is
+// { name, mime, bytes: Uint8Array, duration?, width?, height? }. onProgress
+// is called after each part with (sent, total).
+export async function sendMedia(convId, media, onProgress) {
+  if (beacon.status !== 'on') throw new Error('connect a beacon to send');
+  const bytes = media && media.bytes;
+  if (!(bytes instanceof Uint8Array) || !bytes.length) throw new Error('nothing to send');
+  if (bytes.length > MAX_MEDIA_BYTES) throw new Error(`${(bytes.length / 1048576).toFixed(1)} mb is over the 1.5 mb limit`);
+  const dev = convId.startsWith('dm:') ? deviceForDm(convId) : null;
+  const room = dev ? null : state.rooms.find((r) => r.id === convId && !r.left);
+  if (!dev && !room) throw new Error('conversation not found');
+  const parts = Math.ceil(bytes.length / MEDIA_CHUNK);
+  const meta = mediaMeta({ name: media.name || 'file', mime: MIME.test(media.mime || '') ? media.mime : 'application/octet-stream', size: bytes.length, parts, duration: media.duration, width: media.width, height: media.height });
+  const mediaId = uuid();
+  const ts = nowIso();
+  for (let i = 0; i < parts; i++) {
+    const body = { ...meta, mediaId, part: i, data: b64url.encode(bytes.subarray(i * MEDIA_CHUNK, (i + 1) * MEDIA_CHUNK)) };
+    if (dev) await sendDirect(dev, { kind: 'media', ...body }, true, true);
+    else await sendRoomMessage(room, 'media', body, { keep: true });
+    if (onProgress) onProgress(i + 1, parts);
+  }
+  const { parts: _n, ...stored } = meta;
+  const msg = { id: mediaId, fp: state.identity.fingerprint, kind: 'media', ts, rx: ts, ...stored, data: b64url.encode(bytes) };
+  await storeMessage(convId, msg);
+  if (dev) await touchDevice(dev);
+  else { room.updatedAt = ts; await saveRoom(room); }
+  emit('room:message', { roomId: convId, msg, mine: true });
+  return msg;
 }
 
 // shared validation for text and location messages from any peer
@@ -432,6 +532,9 @@ async function handleRoomFrame(room, text, replay) {
       break;
     case 'call':
       if (!replay) emit('room:call', { roomId: room.id, msg, sender });
+      break;
+    case 'media':
+      await acceptMediaPart(room.id, msg, msg.fp, { sender, replay, afterStore: async () => { room.updatedAt = nowIso(); await saveRoom(room); } });
       break;
     default:
       break;

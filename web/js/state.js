@@ -11,6 +11,7 @@ export const DEFAULT_SETTINGS = {
   beaconAuto: false,
   iceServers: '',             // optional stun/turn urls, one per line, off by default
   theme: 'night',             // 'night' (the picture) | 'deep' (dimmed, denser glass)
+  quietKeys: 'system',        // 'system' keyboard | 'quiet': the on-page keyboard for messages and notes
 };
 
 export const state = {

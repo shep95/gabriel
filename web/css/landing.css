@@ -108,6 +108,7 @@
 /* the cue: one thread of the cascade, falling, at the bottom of the hero */
 .cue { position: absolute; left: 50%; bottom: 1.6rem; z-index: 1; width: 1px; height: 56px; border: 0; overflow: hidden; transform: translateX(-50%); opacity: 0.7; }
 .cue span { position: absolute; left: 0; top: 0; width: 1px; height: 100%; background: linear-gradient(180deg, transparent, var(--on-sky) 40%, transparent); animation: fall 3.4s var(--ease) infinite; }
+.hero.resting .cue span { animation: none; }
 @keyframes fall { 0% { transform: translateY(-100%); } 55% { transform: translateY(100%); } 100% { transform: translateY(100%); } }
 
 /* ---------- sections: sheets of glass on the field ---------- */
@@ -161,6 +162,7 @@ section.block h2 { max-width: 16ch; }
 .device .code { position: absolute; left: 0; right: 0; bottom: 14%; text-align: center; font-family: var(--mono); font-size: 0.7rem; letter-spacing: 0.25em; color: rgba(255,255,255,0.75); transition: color 600ms var(--ease); }
 .pairdemo .link { width: clamp(40px, 8vw, 120px); height: 1px; background: linear-gradient(90deg, transparent, var(--line-strong), transparent); position: relative; }
 .pairdemo .link::after { content: ""; position: absolute; top: -2px; left: 0; width: 5px; height: 5px; border-radius: 50%; background: var(--dim); animation: travel 3.2s var(--ease) infinite; }
+.pairdemo:not(.live) .link::after { animation: none; }
 @keyframes travel { 0% { left: 0; opacity: 0; } 15% { opacity: 1; } 85% { opacity: 1; } 100% { left: 100%; opacity: 0; } }
 .pairdemo.trust .device .code { color: var(--accent); }
 .pairdemo.trust .link::after { background: var(--accent); box-shadow: 0 0 10px var(--accent-glow); }

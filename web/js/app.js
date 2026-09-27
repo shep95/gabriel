@@ -20,10 +20,12 @@ import {
   loadRooms, createRoom, inviteDevice, removeMember, rotateEpoch, leaveRoom, deleteRoom,
   loadMessages, sendRoomMessage, sendDirectMessage, refreshSubscriptions, roomPeerCount, devicePeerCount,
   memberName, dmId, deviceForDm, callTransport, deleteConversationMessages,
+  sendMedia, MAX_MEDIA_BYTES,
 } from './rooms.js';
 import { call, joinCall, leaveCall, toggleMute, toggleVideo, snapshot as callSnapshot, resumeAudio } from './calls.js';
 import { notificationSupport, requestNotifications, notifyIncoming, clearNotifications } from './notify.js';
 import { installShield, applyShieldClass, shieldEnabled } from './shield.js';
+import { quietKeyboard } from './keypad.js';
 import { isStandalone, watchInstallPrompt, promptInstall, installInstructions } from './install.js';
 import {
   currentPosition, watchPosition, distanceM, bearingDeg, fmtDistance, compassPoint,
@@ -55,6 +57,7 @@ let reloadOnLock = false;
 
 function lock(reason) {
   if (reloadOnLock) { location.reload(); return; }
+  releaseMedia();
   stopLiveShare();
   if (call.roomId) leaveCall().catch(() => {});
   disconnectBeacon();
@@ -98,6 +101,7 @@ function coerceSettings(v) {
   o.beaconAuto = !!v.beaconAuto;
   o.iceServers = String(v.iceServers || '').slice(0, 2000);
   o.theme = v.theme === 'deep' ? 'deep' : 'night';
+  o.quietKeys = v.quietKeys === 'quiet' ? 'quiet' : 'system';
   return o;
 }
 
@@ -184,10 +188,12 @@ async function saveSettings() {
 // ---------- gate: create / unlock ----------
 
 function signalMarkup(trust = false) {
-  return `<div class="signal" data-trust="${trust}" aria-hidden="true"><svg viewBox="0 0 1000 1000"><circle cx="500" cy="500" r="480"/><circle cx="500" cy="500" r="480"/><circle cx="500" cy="500" r="480"/></svg></div>`;
+  return `<div class="signal" data-trust="${trust}" aria-hidden="true"><div class="plane"><i></i><i></i><i></i></div></div>`;
 }
 
 function renderGate() {
+  // the sky moves while a person arrives; once the vault is open it rests
+  document.documentElement.classList.add('sky-moving');
   if (!cryptoAvailable()) {
     root.innerHTML = `<div class="gate">${signalMarkup()}<div class="panel"><h1>this browser cannot run the console</h1><p>web cryptography is missing. that usually means the page was opened over plain http from another machine. open it over https, or from localhost.</p></div></div>`;
     return;
@@ -206,13 +212,16 @@ function renderCreate() {
           <div class="field"><label for="c-name">name</label><input id="c-name" type="text" maxlength="24" required autocomplete="nickname" autocapitalize="off"></div>
           <div class="field"><label for="c-pass">passphrase</label><input id="c-pass" type="password" minlength="8" required autocomplete="new-password"><div class="hint" id="c-hint">length matters more than symbols. four unrelated words is a good passphrase.</div></div>
           <div class="field"><label for="c-pass2">again</label><input id="c-pass2" type="password" required autocomplete="new-password"></div>
-          <div class="actions"><button class="primary" type="submit" id="c-submit">create</button><span class="hint" id="c-status"></span></div>
+          <div class="actions"><button class="primary" type="submit" id="c-submit">create</button><button class="ghost small" type="button" id="c-quiet">type on the page</button><span class="hint" id="c-status"></span></div>
         </form>
         <p class="fine reveal in" style="--i:4">key derivation runs 600 000 rounds on this device; on a slow phone that takes a second or two. nothing is uploaded, because there is nowhere to upload to.</p>
       </div>
     </div>`;
   const form = $('#create-form');
   const pass = $('#c-pass'), pass2 = $('#c-pass2'), hint = $('#c-hint');
+  // the on-page keyboard: the passphrase never passes through the system keyboard
+  const quiet = quietKeyboard([pass, pass2], { onDone: () => form.requestSubmit() });
+  $('#c-quiet').onclick = () => { $('#c-quiet').textContent = quiet.toggle() ? 'system keyboard' : 'type on the page'; };
   pass.addEventListener('input', () => {
     const n = pass.value.length;
     hint.textContent = n === 0 ? 'length matters more than symbols. four unrelated words is a good passphrase.'
@@ -257,12 +266,14 @@ function renderUnlock() {
         <p class="reveal in" style="--i:2">everything on this device stays sealed until the passphrase opens it.</p>
         <form id="unlock-form" class="reveal in" style="--i:3" novalidate>
           <div class="field"><label for="u-pass">passphrase</label><input id="u-pass" type="password" required autocomplete="current-password"></div>
-          <div class="actions"><button class="primary" type="submit" id="u-submit">open</button><span class="hint" id="u-status"></span></div>
+          <div class="actions"><button class="primary" type="submit" id="u-submit">open</button><button class="ghost small" type="button" id="u-quiet">type on the page</button><span class="hint" id="u-status"></span></div>
         </form>
         <p class="fine reveal in" style="--i:4">forgot it? there is no recovery. you can <a href="#" id="u-wipe">erase this device's console data</a> and start over.</p>
       </div>
     </div>`;
   const form = $('#unlock-form');
+  const quiet = quietKeyboard($('#u-pass'), { onDone: () => form.requestSubmit() });
+  $('#u-quiet').onclick = () => { $('#u-quiet').textContent = quiet.toggle() ? 'system keyboard' : 'type on the page'; };
   form.addEventListener('submit', async (e) => {
     e.preventDefault();
     const input = $('#u-pass');
@@ -328,6 +339,7 @@ async function enterApp() {
 }
 
 function renderShell() {
+  document.documentElement.classList.remove('sky-moving');
   root.innerHTML = `
     <div class="shell">
       <nav class="sidenav" aria-label="sections">
@@ -678,12 +690,18 @@ async function viewRoom(el, convId) {
       <div id="call-panel"></div>
       <div class="shield-hint">shielded: press and hold a message to read it. it blurs again when you let go.</div>
       <div class="timeline" id="timeline"></div>
+      <div class="send-status" id="send-status" aria-live="polite"></div>
       <div class="composer">
-        <textarea id="compose" rows="1" placeholder="${beacon.status === 'on' ? (conv.isRoom ? 'message the room' : `message ${escapeHtml(conv.name)}`) : 'connect a beacon to send'}" maxlength="4000"></textarea>
+        <button class="tool" id="attach" type="button" title="send a photo or a file" aria-label="send a photo or a file"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20.5 11.5 12 20a5 5 0 0 1-7-7l9-9a3.2 3.2 0 0 1 4.5 4.5L9.8 17.2a1.4 1.4 0 0 1-2-2l7.6-7.6"/></svg></button>
+        <input type="file" id="attach-input" hidden>
+        <button class="tool" id="mic" type="button" title="hold to record a voice clip" aria-label="hold to record a voice clip" hidden><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="3" width="6" height="12" rx="3"/><path d="M5.5 11.5a6.5 6.5 0 0 0 13 0M12 18v3"/></svg></button>
+        <textarea id="compose" rows="1" placeholder="${beacon.status === 'on' ? (conv.isRoom ? 'message the room' : `message ${escapeHtml(conv.name)}`) : 'connect a beacon to send'}" maxlength="4000" autocomplete="off" autocorrect="off" autocapitalize="sentences" spellcheck="false" data-gramm="false" data-enable-grammarly="false"></textarea>
         <button class="primary" id="send">send</button>
       </div>
     </section>`;
   paintMembers(conv);
+  releaseMedia();
+  wireMediaComposer(conv);
   const tl = $('#timeline');
   const msgs = await loadMessages(convId);
   tl.innerHTML = msgs.map((m) => bubble(conv, m)).join('') || '<div class="sysline">nothing yet</div>';
@@ -692,14 +710,21 @@ async function viewRoom(el, convId) {
   const doSend = async () => {
     const text = compose.value.trim();
     if (!text) return;
+    compose.value = ''; compose.style.height = '';
     try {
       await conv.send('text', { text });
-      compose.value = ''; compose.style.height = '';
-    } catch (e) { toast(e.message, 'error'); }
+    } catch (e) {
+      if (!compose.value) compose.value = text; // give it back to be sent again
+      toast(e.message, 'error');
+    }
   };
   $('#send').onclick = doSend;
   compose.addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); doSend(); } });
   compose.addEventListener('input', () => { compose.style.height = 'auto'; compose.style.height = `${Math.min(compose.scrollHeight, 160)}px`; });
+  if (state.settings.quietKeys === 'quiet') {
+    const quiet = quietKeyboard(compose, { onDone: doSend, mount: $('.composer'), where: 'append' });
+    quiet.open();
+  }
   const people = $('#room-people');
   if (people) people.onclick = () => peopleSheet(conv.room, founder);
   $('#room-where').onclick = () => whereSheet(conv);
@@ -721,8 +746,149 @@ function bubble(conv, m) {
     const rel = myPos ? `${fmtDistance(distanceM(myPos, m))} ${compassPoint(bearingDeg(myPos, m))} of you` : `±${Number(m.acc) || '?'} m`;
     return `<div class="bubble loc ${mine ? 'mine' : ''}" data-id="${id}"><div class="who ${mine ? 'me' : ''}">${escapeHtml(who)} · location${m.live ? ' · live' : ''}</div><div class="txt" data-shielded>${Number(m.lat).toFixed(5)}, ${Number(m.lon).toFixed(5)}<br>${escapeHtml(rel)}</div><div class="when">${when}</div></div>`;
   }
+  if (m.kind === 'media') return mediaBubble(m, mine, who, when, id);
   return `<div class="bubble ${mine ? 'mine' : ''}" data-id="${id}"><div class="who ${mine ? 'me' : ''}">${escapeHtml(who)}</div><div class="txt" data-shielded>${escapeHtml(m.text || '')}</div><div class="when">${when}</div></div>`;
 }
+
+// ---------- media: photos, voice clips, files ----------
+
+// blob urls made for the timeline on screen; released when it is repainted
+const liveMediaUrls = [];
+function releaseMedia() { for (const u of liveMediaUrls.splice(0)) URL.revokeObjectURL(u); }
+function mediaUrl(m) {
+  const url = URL.createObjectURL(new Blob([b64url.decode(m.data)], { type: m.mime }));
+  liveMediaUrls.push(url);
+  return url;
+}
+function fmtBytes(n) { return n < 1024 ? `${n} b` : n < 1048576 ? `${Math.round(n / 1024)} kb` : `${(n / 1048576).toFixed(1)} mb`; }
+function fmtClock(sec) { const s = Math.round(sec); return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`; }
+function mediaBubble(m, mine, who, when, id) {
+  const url = mediaUrl(m);
+  const name = escapeHtml(m.name || 'file');
+  let inner;
+  if (m.mime.startsWith('image/')) {
+    const ratio = m.width && m.height ? ` style="aspect-ratio:${Number(m.width)}/${Number(m.height)}"` : '';
+    inner = `<img class="media-img" data-shielded src="${url}" alt="" draggable="false"${ratio}><div class="media-meta">photo · ${fmtBytes(m.size)}</div>`;
+  } else if (m.mime.startsWith('audio/')) {
+    inner = `<div class="media-audio"><audio controls preload="metadata" src="${url}"></audio><div class="media-meta">voice${m.duration ? ` · ${fmtClock(m.duration)}` : ''} · ${fmtBytes(m.size)}</div></div>`;
+  } else if (m.mime.startsWith('video/')) {
+    inner = `<video class="media-img" data-shielded controls playsinline preload="metadata" src="${url}"></video><div class="media-meta">video · ${fmtBytes(m.size)}</div>`;
+  } else {
+    inner = `<a class="media-file" href="${url}" download="${name}"><span class="media-name">${name}</span><span class="media-meta">${fmtBytes(m.size)} · tap to save</span></a>`;
+  }
+  return `<div class="bubble media ${mine ? 'mine' : ''}" data-id="${id}"><div class="who ${mine ? 'me' : ''}">${escapeHtml(who)}</div>${inner}<div class="when">${when}</div></div>`;
+}
+
+function setSendStatus(text) { const el = $('#send-status'); if (el) el.textContent = text || ''; }
+
+// a photo is re-encoded before it leaves: that strips exif (camera, time,
+// gps) and bounds the size. it steps down until the jpeg fits the target.
+async function prepareImage(file) {
+  let bmp;
+  try { bmp = await createImageBitmap(file); } catch { return { name: file.name || 'image', mime: file.type || 'application/octet-stream', bytes: new Uint8Array(await file.arrayBuffer()) }; }
+  const TARGET = 350_000;
+  let blob = null, w = bmp.width, h = bmp.height;
+  const encode = async (side, q) => {
+    const scale = Math.min(1, side / Math.max(bmp.width, bmp.height));
+    w = Math.max(1, Math.round(bmp.width * scale)); h = Math.max(1, Math.round(bmp.height * scale));
+    const canvas = document.createElement('canvas'); canvas.width = w; canvas.height = h;
+    canvas.getContext('2d').drawImage(bmp, 0, 0, w, h);
+    return new Promise((r) => canvas.toBlob(r, 'image/jpeg', q));
+  };
+  // first at the largest size; if that is over the target, jump straight to the
+  // side that should land under it (bytes scale with pixels), then one last step
+  blob = await encode(1600, 0.85);
+  if (blob && blob.size > TARGET) blob = await encode(Math.max(480, Math.floor(Math.max(w, h) * Math.sqrt((TARGET * 0.85) / blob.size))), 0.8);
+  if (blob && blob.size > TARGET) blob = await encode(Math.max(320, Math.floor(Math.max(w, h) * 0.75)), 0.68);
+  bmp.close();
+  if (!blob) throw new Error('could not encode the image');
+  return { name: `${(file.name || 'photo').replace(/\.[^.]+$/, '') || 'photo'}.jpg`, mime: 'image/jpeg', bytes: new Uint8Array(await blob.arrayBuffer()), width: w, height: h };
+}
+
+async function sendMediaFromComposer(conv, media, label) {
+  try {
+    if (media.bytes.length > MAX_MEDIA_BYTES) throw new Error(`${fmtBytes(media.bytes.length)} is over the ${fmtBytes(MAX_MEDIA_BYTES)} limit`);
+    setSendStatus(`sending ${label}`);
+    await sendMedia(conv.id, media, (i, n) => { if (n > 1) setSendStatus(`sending ${label} · ${i}/${n}`); });
+    setSendStatus('');
+  } catch (e) {
+    setSendStatus('');
+    toast(e.message, 'error');
+  }
+}
+
+function pickAudioMime() {
+  if (!window.MediaRecorder) return null;
+  for (const t of ['audio/webm;codecs=opus', 'audio/mp4', 'audio/ogg;codecs=opus', 'audio/webm']) if (MediaRecorder.isTypeSupported(t)) return t;
+  return '';
+}
+
+function wireMediaComposer(conv) {
+  const input = $('#attach-input');
+  $('#attach').onclick = () => input.click();
+  input.onchange = async () => {
+    const file = input.files && input.files[0];
+    input.value = '';
+    if (!file) return;
+    if (beacon.status !== 'on') return toast('connect a beacon to send', 'error');
+    const isImage = /^image\//.test(file.type);
+    const media = isImage ? await prepareImage(file).catch((e) => { toast(`image: ${e.message}`, 'error'); return null; })
+      : { name: file.name || 'file', mime: file.type || 'application/octet-stream', bytes: new Uint8Array(await file.arrayBuffer()) };
+    if (!media) return;
+    await sendMediaFromComposer(conv, media, isImage ? 'photo' : 'file');
+  };
+
+  const mic = $('#mic');
+  const mime = pickAudioMime();
+  if (mime === null || !navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) return;
+  mic.hidden = false;
+  let rec = null, chunks = [], timer = null, startedAt = 0;
+  const stop = () => { if (rec && rec.state !== 'inactive') rec.stop(); };
+  const start = async (e) => {
+    e.preventDefault();
+    if (rec) return;
+    if (beacon.status !== 'on') return toast('connect a beacon to send', 'error');
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      rec = new MediaRecorder(stream, mime ? { mimeType: mime, audioBitsPerSecond: 24_000 } : { audioBitsPerSecond: 24_000 });
+      chunks = [];
+      rec.ondataavailable = (ev) => { if (ev.data && ev.data.size) chunks.push(ev.data); };
+      rec.onstop = async () => {
+        for (const t of stream.getTracks()) t.stop();
+        clearInterval(timer);
+        mic.classList.remove('rec');
+        const duration = (Date.now() - startedAt) / 1000;
+        const type = (rec.mimeType || mime || 'audio/webm').split(';')[0];
+        rec = null;
+        setSendStatus('');
+        if (duration < 0.6) return toast('hold the microphone while you speak');
+        const blob = new Blob(chunks, { type });
+        const ext = type.includes('mp4') ? 'm4a' : type.includes('ogg') ? 'ogg' : 'webm';
+        await sendMediaFromComposer(conv, { name: `voice-${new Date().toISOString().slice(11, 19).replace(/:/g, '')}.${ext}`, mime: type, bytes: new Uint8Array(await blob.arrayBuffer()), duration }, 'voice clip');
+      };
+      rec.start(250);
+      startedAt = Date.now();
+      mic.classList.add('rec');
+      timer = setInterval(() => {
+        const s = (Date.now() - startedAt) / 1000;
+        setSendStatus(`recording · ${fmtClock(s)} · release to send`);
+        if (s >= 60) stop();
+      }, 200);
+    } catch (err) { toast(`microphone: ${err.message}`, 'error'); }
+  };
+  mic.addEventListener('pointerdown', start);
+  mic.addEventListener('pointerup', stop);
+  mic.addEventListener('pointercancel', stop);
+  mic.addEventListener('pointerleave', stop);
+  mic.addEventListener('contextmenu', (e) => e.preventDefault());
+}
+
+// half-received media shows its progress under the timeline
+on('media:progress', ({ roomId, got, parts, meta }) => {
+  if (roomId !== currentRoomId || got >= parts) return;
+  const what = meta.mime.startsWith('image/') ? 'photo' : meta.mime.startsWith('audio/') ? 'voice clip' : meta.mime.startsWith('video/') ? 'video' : 'file';
+  setSendStatus(`receiving ${what} · ${got}/${parts}`);
+});
 
 function paintMembers(conv) {
   const el = $('#room-members');
@@ -737,6 +903,7 @@ on('room:message', ({ roomId, msg, mine, replay, sender }) => {
     const tl = $('#timeline');
     if (tl) {
       if (tl.querySelector('.sysline')) tl.innerHTML = '';
+      if (msg.kind === 'media' && !mine) setSendStatus('');
       const atBottom = tl.scrollHeight - tl.scrollTop - tl.clientHeight < 80;
       tl.insertAdjacentHTML('beforeend', bubble(conv, msg));
       if (atBottom || mine) tl.scrollTop = tl.scrollHeight;
@@ -921,7 +1088,7 @@ function editNote(el, note) {
     <section class="note-editor">
       <div class="row between"><h2>${isNew ? 'new note' : 'note'}</h2><div class="row"><button class="ghost" id="n-back">back</button>${isNew ? '' : '<button class="danger small" id="n-del">delete</button>'}</div></div>
       <div class="field" style="margin-top:1.2rem"><label for="n-title">title</label><input id="n-title" type="text" maxlength="120" value="${escapeHtml(n.title)}"></div>
-      <div class="field"><label for="n-body">body</label><textarea id="n-body" maxlength="6000">${escapeHtml(n.body)}</textarea><div class="hint">up to 6000 characters. anything longer than about 500 characters becomes a multi-frame code when handed across.</div></div>
+      <div class="field"><label for="n-body">body</label><textarea id="n-body" maxlength="6000" autocomplete="off" autocorrect="off" spellcheck="false" data-gramm="false" data-enable-grammarly="false">${escapeHtml(n.body)}</textarea><div class="hint">up to 6000 characters. anything longer than about 500 characters becomes a multi-frame code when handed across.</div></div>
       <div class="row"><button class="primary" id="n-save">save</button>${isNew ? '' : '<a href="#/transfer"><button>hand across</button></a>'}<span class="hint" style="color:var(--dim)">${n.from ? `received from ${escapeHtml(n.from)} · ` : ''}${isNew ? '' : `edited ${relativeTime(n.updatedAt)}`}</span></div>
     </section>`;
   $('#n-back').onclick = () => viewNotes(el);
@@ -941,6 +1108,7 @@ function editNote(el, note) {
     state.notes = state.notes.filter((x) => x.id !== n.id);
     viewNotes(el);
   };
+  if (state.settings.quietKeys === 'quiet') quietKeyboard([$('#n-title'), $('#n-body')], { mount: $('#n-body').closest('.field') }).open();
   ($('#n-title').value ? $('#n-body') : $('#n-title')).focus();
 }
 
@@ -1131,8 +1299,15 @@ async function viewPrivacy(el) {
 
       <div class="card" style="margin-top:1rem">
         <h3>shield</h3>
-        <p style="margin-top:.6rem">on: messages blur until you press and hold one, the app veils itself whenever it is not in front, and shielded text cannot be selected or copied. a page cannot stop the operating system from taking a screenshot or recording the screen; this makes a capture worth less, not impossible.</p>
+        <p style="margin-top:.6rem">on: messages and photos blur until you press and hold one, one at a time and for at most eight seconds; the app veils itself whenever it is not in front; shielded text cannot be selected, copied or dragged. a page cannot stop the operating system, a browser extension or a screen recorder from capturing the screen: a recording taken frame by frame gets one held message, nothing more. the native app on iphone blanks itself while a recording runs.</p>
         <div class="choice" style="margin-top:.8rem"><button class="small ${s.shield ? 'on' : ''}" data-shield="1">on</button><button class="small ${s.shield ? '' : 'on'}" data-shield="0">off</button></div>
+      </div>
+
+      <div class="card" style="margin-top:1rem">
+        <h3>typing</h3>
+        <p style="margin-top:.6rem">the system keyboard sees everything typed into it, and so does any keyboard app, input method or keystroke logger installed on the device. the on-page keyboard is drawn by the console, shuffled each time it opens, and what you type on it never leaves this page. it is slower. the passphrase screens offer it always; this switch uses it for every message and note too. neither keyboard helps against a browser extension or a compromised browser, which read the page itself.</p>
+        <div class="choice" style="margin-top:.8rem"><button class="small ${s.quietKeys !== 'quiet' ? 'on' : ''}" data-quiet-keys="system">system keyboard</button><button class="small ${s.quietKeys === 'quiet' ? 'on' : ''}" data-quiet-keys="quiet">on-page keyboard</button></div>
+        <p class="hint" style="color:var(--dim);margin-top:.8rem">either way, the composer and the notes editor never hand text to cloud spell-check or a writing assistant.</p>
       </div>
 
       <div class="card" style="margin-top:1rem">
@@ -1198,6 +1373,8 @@ async function viewPrivacy(el) {
   el.onclick = async (e) => {
     const sh = e.target.closest('[data-shield]'); const nt = e.target.closest('[data-notif]'); const tl = e.target.closest('[data-tiles]');
     if (sh) { s.shield = sh.dataset.shield === '1'; await saveSettings(); viewPrivacy(el); }
+    const qk = e.target.closest('[data-quiet-keys]');
+    if (qk) { s.quietKeys = qk.dataset.quietKeys === 'quiet' ? 'quiet' : 'system'; await saveSettings(); viewPrivacy(el); }
     if (nt) { s.notifications = nt.dataset.notif; await saveSettings(); if (s.notifications !== 'off' && ns.permission === 'default') await requestNotifications(); viewPrivacy(el); }
     if (tl) {
       if (tl.dataset.tiles === 'osm' && s.tiles !== 'osm') {
