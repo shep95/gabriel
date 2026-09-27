@@ -581,6 +581,11 @@ function renderSas(el) {
     };
     await saveDevice(dev);
     await refreshSubscriptions();
+    // paired: open the conversation with them straight away
+    pairing = null;
+    toast(`paired with ${dev.name}`, 'ok');
+    location.hash = `#/rooms/${dmId(dev)}`;
+    return;
     $('#sas').classList.add('matched');
     toast(`paired with ${t.name}`, 'ok');
     setTimeout(() => viewDevices(el), 900);
@@ -710,6 +715,7 @@ async function viewRoom(el, convId) {
   const doSend = async () => {
     const text = compose.value.trim();
     if (!text) return;
+    if (beacon.status !== 'on') return noBeaconSheet();
     compose.value = ''; compose.style.height = '';
     try {
       await conv.send('text', { text });
@@ -781,6 +787,17 @@ function mediaBubble(m, mine, who, when, id) {
 
 function setSendStatus(text) { const el = $('#send-status'); if (el) el.textContent = text || ''; }
 
+// sending with no beacon: say how messages travel, and offer the way there
+function noBeaconSheet() {
+  const box = openOverlay(`
+    <h3>no beacon in reach</h3>
+    <p style="margin-top:.6rem">messages, photos and calls travel over a beacon: a small relay on the wi-fi hotspot in the room. nothing goes over the internet, ever, even when the internet is there.</p>
+    <p>someone runs it on a laptop or a spare phone with one command, everyone installs its certificate once, and then this console connects to it under privacy. the beacon carries only ciphertext it cannot read.</p>
+    <div class="row" style="margin-top:1.2rem;justify-content:flex-end"><button class="ghost" id="nb-close">close</button><a href="#/privacy" id="nb-go"><button class="primary">set up a beacon</button></a></div>`);
+  $('#nb-close', box).onclick = closeOverlay;
+  $('#nb-go', box).onclick = () => closeOverlay();
+}
+
 // a photo is re-encoded before it leaves: that strips exif (camera, time,
 // gps) and bounds the size. it steps down until the jpeg fits the target.
 async function prepareImage(file) {
@@ -830,7 +847,7 @@ function wireMediaComposer(conv) {
     const file = input.files && input.files[0];
     input.value = '';
     if (!file) return;
-    if (beacon.status !== 'on') return toast('connect a beacon to send', 'error');
+    if (beacon.status !== 'on') return noBeaconSheet();
     const isImage = /^image\//.test(file.type);
     const media = isImage ? await prepareImage(file).catch((e) => { toast(`image: ${e.message}`, 'error'); return null; })
       : { name: file.name || 'file', mime: file.type || 'application/octet-stream', bytes: new Uint8Array(await file.arrayBuffer()) };
@@ -847,7 +864,7 @@ function wireMediaComposer(conv) {
   const start = async (e) => {
     e.preventDefault();
     if (rec) return;
-    if (beacon.status !== 'on') return toast('connect a beacon to send', 'error');
+    if (beacon.status !== 'on') return noBeaconSheet();
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       rec = new MediaRecorder(stream, mime ? { mimeType: mime, audioBitsPerSecond: 24_000 } : { audioBitsPerSecond: 24_000 });
@@ -922,7 +939,10 @@ on('rooms:changed', ({ roomId, reason, who }) => {
     if (tl && reason === 'left' && who) tl.insertAdjacentHTML('beforeend', `<div class="sysline">${escapeHtml(who.name)} left</div>`);
     if (tl && reason === 'rotated') tl.insertAdjacentHTML('beforeend', '<div class="sysline">the room key was rotated</div>');
   }
-  if (reason === 'invited' && conv) toast(`added to ${conv.name}`, 'ok');
+  if (reason === 'invited' && conv) {
+    toast(`added to ${conv.name}`, 'ok');
+    if (!currentRoomId && !call.roomId && state.vaultKey) location.hash = `#/rooms/${roomId}`;
+  }
 });
 on('beacon:count', () => { const conv = currentRoomId ? getConv(currentRoomId) : null; if (conv) paintMembers(conv); });
 

@@ -1,5 +1,2 @@
 User-agent: *
-Allow: /
-Disallow: /app.html
-Disallow: /sw.js
-Sitemap: https://gabriel-asher.vercel.app/sitemap.xml
+Disallow: /

@@ -1,5 +1,6 @@
-// writes the absolute site url into the places crawlers need it:
-// canonical + og:url in index.html, and sitemap.xml. run once per domain:
+// writes the absolute site url into the places a link preview needs it:
+// canonical, og:url and the image tags in index.html. the site asks not to be
+// indexed (robots.txt, meta robots, x-robots-tag), so there is no sitemap. run once per domain:
 //   node web/scripts/set-site-url.mjs https://your-domain.example
 import fs from 'node:fs';
 import path from 'node:path';
@@ -20,12 +21,4 @@ put(/<meta property="og:image" content="[^"]*">/, `<meta property="og:image" con
 put(/<meta name="twitter:image" content="[^"]*">/, `<meta name="twitter:image" content="${site}/icons/og.png">`);
 html = html.replace(/"url": "https?:\/\/[^"]*"/, `"url": "${site}/"`);
 fs.writeFileSync(indexPath, html);
-const today = new Date().toISOString().slice(0, 10);
-fs.writeFileSync(path.join(root, 'sitemap.xml'), `<?xml version="1.0" encoding="UTF-8"?>
-<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
-  <url><loc>${site}/</loc><lastmod>${today}</lastmod><changefreq>monthly</changefreq><priority>1.0</priority></url>
-</urlset>
-`);
-let robots = fs.readFileSync(path.join(root, 'robots.txt'), 'utf8').replace(/\nSitemap: .*\n?/g, '\n');
-fs.writeFileSync(path.join(root, 'robots.txt'), `${robots.trimEnd()}\nSitemap: ${site}/sitemap.xml\n`);
 console.log('site url set to', site);

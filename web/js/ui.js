@@ -15,8 +15,13 @@ export function toast(msg, kind = '') {
   toastTimer = setTimeout(() => t.classList.remove('show'), kind === 'error' ? 5200 : 3200);
 }
 
+// one overlay element serves every sheet. closing fades it and empties it a
+// moment later; opening a new sheet inside that moment must cancel the wipe,
+// or the new sheet disappears under the person's finger.
+let closeTimer = null;
 export function openOverlay(html) {
   const o = $('#overlay');
+  clearTimeout(closeTimer); closeTimer = null;
   $('#overlay-box').innerHTML = html;
   o.hidden = false;
   requestAnimationFrame(() => o.classList.add('show'));
@@ -27,7 +32,8 @@ export function closeOverlay() {
   const o = $('#overlay');
   if (!o) return;
   o.classList.remove('show');
-  setTimeout(() => { o.hidden = true; $('#overlay-box').innerHTML = ''; }, 240);
+  clearTimeout(closeTimer);
+  closeTimer = setTimeout(() => { closeTimer = null; if (o.classList.contains('show')) return; o.hidden = true; $('#overlay-box').innerHTML = ''; }, 240);
 }
 
 export function confirmDialog({ title, body, okLabel = 'continue', danger = false, typeToConfirm = null }) {

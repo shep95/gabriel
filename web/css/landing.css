@@ -188,3 +188,9 @@ footer .ver { color: var(--muted); font-size: 0.8rem; }
 footer .fine { display: flex; justify-content: space-between; gap: 1rem; flex-wrap: wrap; margin-top: 1.4rem; padding: 0 0.4rem; color: var(--dim); font-size: 0.78rem; letter-spacing: 0.04em; }
 @media (max-width: 760px) { footer .foot { grid-template-columns: 1fr 1fr; } footer .brand { grid-column: 1 / -1; } }
 @media (max-width: 440px) { footer .foot { grid-template-columns: 1fr; } }
+
+/* short screens: the hero gives up its full height and its cue */
+@media (max-height: 560px) {
+  .hero { min-height: 0; padding: 3rem 0 4rem; }
+  .cue { display: none; }
+}

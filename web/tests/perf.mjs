@@ -189,7 +189,7 @@ async function main() {
       await A.page.fill('#their-text', codeB); await A.page.click('#read-theirs'); await A.page.waitForSelector('#sas');
       await B.page.fill('#their-text', codeA); await B.page.click('#read-theirs'); await B.page.waitForSelector('#sas');
       await A.page.click('#sas-yes'); await B.page.click('#sas-yes');
-      await A.page.waitForSelector('.item-row.trust'); await B.page.waitForSelector('.item-row.trust');
+      await A.page.waitForSelector('#compose'); await B.page.waitForSelector('#compose'); // pairing opens the chat
     });
     record('pairing: both codes read, sas derived, both confirmed', pairMs, 'ms', 3000);
     record('beacon: connect', await timed(() => connectBeacon(A.page)), 'ms', 2000);

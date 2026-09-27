@@ -222,7 +222,10 @@ async function sweepConsole(browser, viewport, label) {
     await page.waitForSelector('#room-list .item-row', { timeout: 8000 }).catch(() => problem(label, 'room did not appear in the list'));
     await page.click('#room-list .item-row a[href^="#/rooms/"] button');
     await page.waitForSelector('#compose', { timeout: 8000 }).catch(() => problem(label, 'room view did not open from the list'));
-    await page.fill('#compose', 'anyone here'); await page.click('#send'); await sleep(500);
+    await page.fill('#compose', 'anyone here'); await page.click('#send'); await sleep(400);
+    // no beacon: the console explains instead of failing quietly
+    if (!(await overlayOpen(page))) problem(label, 'sending without a beacon did not explain itself');
+    await closeOverlayWith(page, label, '#nb-close');
     await page.click('#room-people'); await sleep(400); await closeOverlayWith(page, label, '#pp-close');
     await page.click('#room-where'); await sleep(400);
     if (await page.$('#overlay-box #wh-locate')) { await page.click('#overlay-box #wh-locate'); await sleep(1500); }

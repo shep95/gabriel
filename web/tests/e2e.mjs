@@ -169,11 +169,16 @@ async function main() {
     await A.page.screenshot({ path: path.join(shots, 'sas.png') });
     await A.page.click('#sas-yes');
     await B.page.click('#sas-yes');
+    // confirming opens the conversation with the new device on both sides
+    await A.page.waitForSelector('#compose', { timeout: 10000 });
+    await B.page.waitForSelector('#compose', { timeout: 10000 });
+    assert((await A.page.evaluate(() => location.hash)).startsWith('#/rooms/dm:'), 'a lands in the direct chat after pairing');
+    await A.page.click('a[data-route="devices"]'); await B.page.click('a[data-route="devices"]');
     await A.page.waitForSelector('.item-row.trust');
     await B.page.waitForSelector('.item-row.trust');
     assert((await A.page.$eval('.item-row .name', (el) => el.textContent)).includes('bao'), 'a lists b');
     assert((await B.page.$eval('.item-row .name', (el) => el.textContent)).includes('ada'), 'b lists a');
-    log(`pairing: identical sas ${sasA} on both devices, both saved as verified`);
+    log(`pairing: identical sas ${sasA} on both devices, both saved as verified, chat opened`);
 
     // own code must be refused
     await A.page.click('#pair-btn');
