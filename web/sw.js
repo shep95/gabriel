@@ -2,7 +2,7 @@
 // and never fetch anything off this origin, with one exception the person
 // turns on by hand: map tiles from openstreetmap.org. bump VERSION on release.
 
-const VERSION = 'gabriel-console-v10';
+const VERSION = 'gabriel-console-v11';
 const PRECACHE = [
   './',
   './index.html',
@@ -11,6 +11,7 @@ const PRECACHE = [
   './css/base.css',
   './css/landing.css',
   './css/app.css',
+  './js/boot.js',
   './js/util.js',
   './js/crypto.js',
   './js/db.js',
@@ -54,7 +55,9 @@ const TILE_HOSTS = new Set(['tile.openstreetmap.org', 'a.tile.openstreetmap.org'
 
 self.addEventListener('install', (event) => {
   event.waitUntil(
-    caches.open(VERSION).then((cache) => cache.addAll(PRECACHE)).then(() => self.skipWaiting()),
+    // cache: 'reload' bypasses the browser's http cache: a release is fetched
+    // whole from the network, never assembled from files of different ages
+    caches.open(VERSION).then((cache) => cache.addAll(PRECACHE.map((u) => new Request(u, { cache: 'reload' })))).then(() => self.skipWaiting()),
   );
 });
 

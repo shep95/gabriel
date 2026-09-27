@@ -1504,6 +1504,7 @@ function viewSettings(el) {
 // ---------- boot ----------
 
 async function main() {
+  document.documentElement.classList.add('app-ready'); // tells the boot guard the module is alive
   watchOnline((online) => {
     const p = $('#net-pill');
     p.classList.toggle('on', !online);
