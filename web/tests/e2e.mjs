@@ -34,7 +34,9 @@ function assert(cond, msg) { if (!cond) throw new Error(`assertion failed: ${msg
 const log = (...a) => console.log('  ', ...a);
 
 async function serve() {
-  const child = spawn('python3', ['-m', 'http.server', String(PORT), '--bind', '127.0.0.1'], { cwd: webRoot, stdio: 'ignore' });
+  // the beacon's dev-http mode serves web/ and the hub on one loopback port,
+  // which is exactly the shape a phone sees on a hotspot (minus tls)
+  const child = spawn('node', ['server.mjs', '--dev-http', String(PORT), '--https-port', '18443', '--http-port', '18080', '--data', '/tmp/gabriel-e2e-beacon', '--name', 'test room'], { cwd: path.resolve(webRoot, '..', 'beacon'), stdio: 'ignore' });
   for (let i = 0; i < 50; i++) {
     try { const r = await fetch(`${ORIGIN}/index.html`); if (r.ok) return child; } catch { /* not up yet */ }
     await new Promise((r) => setTimeout(r, 100));
@@ -45,7 +47,7 @@ async function serve() {
 
 const openPages = [];
 async function newDevice(browser, name, offOrigin) {
-  const context = await browser.newContext({ viewport: { width: 390, height: 844 }, deviceScaleFactor: 2, colorScheme: 'dark' });
+  const context = await browser.newContext({ viewport: { width: 390, height: 844 }, deviceScaleFactor: 2, colorScheme: 'dark', permissions: ['geolocation', 'microphone', 'camera'], geolocation: { latitude: 51.5007, longitude: -0.1246, accuracy: 12 } });
   context.on('request', (req) => { if (!req.url().startsWith(ORIGIN)) offOrigin.push(req.url()); });
   const page = await context.newPage();
   page.on('pageerror', (e) => { console.error(`${name} page error:`, e.message); });
@@ -88,7 +90,7 @@ async function waitForOfflineReady(page) {
 
 async function main() {
   const server = await serve();
-  const browser = await chromium.launch();
+  const browser = await chromium.launch({ args: ['--use-fake-ui-for-media-stream', '--use-fake-device-for-media-stream', '--autoplay-policy=no-user-gesture-required'] });
   const offOrigin = [];
   try {
     // 1. landing page
@@ -245,6 +247,96 @@ async function main() {
     await B.page.waitForSelector('.item-row.trust');
     log('data survives reload offline; passphrase rotation keeps the vault readable');
 
+    // 7. rooms through the beacon: a and b pair already; connect both, found a
+    //    room on a, add b, exchange messages, share a location, hold a call
+    await A.context.setOffline(false); await B.context.setOffline(false);
+    await A.page.goto(`${ORIGIN}/app.html`);
+    await unlock(A.page, 'correct horse battery');
+    await B.page.goto(`${ORIGIN}/app.html`);
+    await unlock(B.page, 'rotated passphrase 2');
+    for (const D of [A, B]) {
+      await D.page.click('a[data-route="privacy"]');
+      await D.page.fill('#b-url', `ws://127.0.0.1:${PORT}/ws`);
+      await D.page.check('#b-auto');
+      await D.page.click('#b-connect');
+      await D.page.waitForFunction(() => document.querySelector('#nav-beacon')?.classList.contains('on'), null, { timeout: 15000 });
+    }
+    log('both devices connected to the beacon');
+
+    await A.page.click('a[data-route="rooms"]');
+    await A.page.click('#room-new');
+    await A.page.fill('#pd', 'north stairwell');
+    await A.page.click('#pd-ok');
+    await A.page.waitForSelector('#timeline');
+    await A.page.click('#room-people');
+    await A.page.waitForSelector('[data-add]');
+    await A.page.click('[data-add]');
+    await A.page.waitForFunction(() => document.querySelector('#toast')?.textContent.includes('added'));
+    // b learns about the room over its pair inbox
+    await B.page.waitForFunction(() => document.querySelector('#toast')?.textContent.includes('added to north stairwell'), null, { timeout: 15000 });
+    await B.page.click('a[data-route="rooms"]');
+    await B.page.waitForSelector('.item-row');
+    await B.page.click('.item-row a');
+    await B.page.waitForSelector('#timeline');
+
+    await A.page.fill('#compose', 'water at the second landing');
+    await A.page.click('#send');
+    await B.page.waitForFunction(() => document.querySelector('#timeline')?.textContent.includes('water at the second landing'), null, { timeout: 15000 });
+    await B.page.fill('#compose', 'on my way, bringing the blue key');
+    await B.page.press('#compose', 'Enter');
+    await A.page.waitForFunction(() => document.querySelector('#timeline')?.textContent.includes('bringing the blue key'), null, { timeout: 15000 });
+    // shield: the message text sits behind a blur until held
+    const shielded = await B.page.$eval('.bubble .txt', (el) => el.hasAttribute('data-shielded') && getComputedStyle(el).filter.includes('blur'));
+    assert(shielded, 'room messages are shielded by default');
+    await B.page.screenshot({ path: path.join(shots, 'room.png') });
+    log('room: b was added over the pair channel, messages flow both ways, shield active');
+
+    // a stranger's beacon frame must be ignored: publish garbage on the room's tag via the raw socket
+    // (the tag is private to members; we just check the ui stays intact after junk on a random tag)
+    await A.page.evaluate((port) => new Promise((res) => { const w = new WebSocket(`ws://127.0.0.1:${port}/ws`); w.onopen = () => w.send(JSON.stringify({ t: 'hello', v: 1 })); w.onmessage = (m) => { const j = JSON.parse(m.data); if (j.t === 'welcome') { w.send(JSON.stringify({ t: 'pub', tag: 'ab'.repeat(32), data: 'junk', keep: true, id: 'x' })); setTimeout(() => { w.close(); res(); }, 200); } }; }), PORT);
+
+    // location: a shares once, b sees it in "where"
+    await A.page.click('#room-where');
+    await A.page.click('#wh-share');
+    await A.page.waitForFunction(() => document.querySelector('#wh-status')?.textContent.includes('shared once'), null, { timeout: 15000 });
+    await A.page.click('#wh-close');
+    await B.page.waitForFunction(() => document.querySelector('#timeline')?.textContent.includes('location'), null, { timeout: 15000 });
+    await B.page.click('#room-where');
+    await B.page.waitForFunction(() => document.querySelector('#wh-list')?.textContent.includes('ada'), null, { timeout: 5000 });
+    await B.page.click('#wh-locate');
+    await B.page.waitForFunction(() => document.querySelector('#wh-list')?.textContent.includes('bearing'), null, { timeout: 10000 });
+    await B.page.screenshot({ path: path.join(shots, 'where.png') });
+    await B.page.click('#wh-close');
+    log('location: shared once, received, radar has a bearing');
+
+    // call: both join, webrtc connects over loopback
+    await A.page.click('#room-call');
+    await A.page.waitForSelector('.callpanel');
+    await B.page.click('#room-call');
+    await B.page.waitForSelector('.callpanel');
+    await A.page.waitForFunction(() => document.querySelector('.callpanel .who')?.textContent.includes('connected'), null, { timeout: 30000 });
+    await B.page.waitForFunction(() => document.querySelector('.callpanel .who')?.textContent.includes('connected'), null, { timeout: 30000 });
+    await A.page.screenshot({ path: path.join(shots, 'call.png') });
+    await A.page.click('#c-mute');
+    await A.page.waitForFunction(() => document.querySelector('#c-mute')?.textContent === 'unmute');
+    await B.page.click('#room-call');
+    await A.page.waitForFunction(() => !document.querySelector('.callpanel .who')?.textContent.includes('connected'), null, { timeout: 15000 });
+    await A.page.click('#room-call');
+    log('call: two peers connected peer to peer, mute works, leaving tears down');
+
+    // removal rotates the key: b stops receiving
+    await A.page.click('#room-people');
+    await A.page.click('[data-remove]');
+    await A.page.click('#c-ok');
+    await A.page.waitForFunction(() => document.querySelector('#toast')?.textContent.includes('rotated'));
+    await A.page.fill('#compose', 'after rotation');
+    await A.page.click('#send');
+    await A.page.waitForTimeout(1500);
+    const leaked = await B.page.$eval('#timeline', (el) => el.textContent.includes('after rotation'));
+    assert(!leaked, 'a removed member does not receive messages sealed under the new key');
+    log('removal: key rotated, removed member sees nothing new');
+
+    // the beacon is on-origin here (same loopback origin), so the off-origin check below still holds
     assert(offOrigin.length === 0, `no off-origin requests (saw ${offOrigin.join(', ')})`);
     log('no request left the origin during any flow');
 

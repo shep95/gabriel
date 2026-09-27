@@ -15,6 +15,9 @@ export const KDF_ITERATIONS = 600_000; // owasp 2023 floor for pbkdf2-sha256
 const PROTO_PAIR = utf8.encode('gabriel/pair/v1');
 const PROTO_SAS = utf8.encode('gabriel/sas/v1');
 const PROTO_MSG = utf8.encode('gabriel/msg/v1');
+const PROTO_INBOX = utf8.encode('gabriel/inbox/v1');
+const PROTO_ROOM = utf8.encode('gabriel/room/v1');
+const PROTO_ROOM_TAG = utf8.encode('gabriel/room-tag/v1');
 
 export function cryptoAvailable() {
   return typeof crypto !== 'undefined' && !!crypto.subtle && typeof crypto.getRandomValues === 'function';
@@ -143,7 +146,40 @@ export async function generateIdentity() {
   const raw = new Uint8Array(await subtle.exportKey('raw', kp.publicKey));
   const pkcs8 = new Uint8Array(await subtle.exportKey('pkcs8', kp.privateKey));
   const pub = compressPoint(raw);
-  return { pub, pkcs8, fingerprint: await fingerprintOf(pub) };
+  const sign = await generateSigningKey();
+  return { pub, pkcs8, fingerprint: await fingerprintOf(pub), signPub: sign.pub, signPkcs8: sign.pkcs8 };
+}
+
+// ecdsa p-256 for authenticating room messages. webcrypto keeps ecdh and
+// ecdsa keys apart, so this is a second key pair; profiles created before
+// rooms existed grow one on their next unlock.
+export async function generateSigningKey() {
+  const kp = await subtle.generateKey({ name: 'ECDSA', namedCurve: 'P-256' }, true, ['sign', 'verify']);
+  const raw = new Uint8Array(await subtle.exportKey('raw', kp.publicKey));
+  const pkcs8 = new Uint8Array(await subtle.exportKey('pkcs8', kp.privateKey));
+  return { pub: compressPoint(raw), pkcs8 };
+}
+
+export async function importSigningPrivate(pkcs8) {
+  return subtle.importKey('pkcs8', pkcs8, { name: 'ECDSA', namedCurve: 'P-256' }, false, ['sign']);
+}
+
+export async function importSigningPublic(pub33) {
+  const { x, y } = decompressPoint(pub33);
+  return subtle.importKey('jwk', { kty: 'EC', crv: 'P-256', x: b64url.encode(x), y: b64url.encode(y), ext: true }, { name: 'ECDSA', namedCurve: 'P-256' }, true, ['verify']);
+}
+
+export async function signBytes(signKey, bytes) {
+  return new Uint8Array(await subtle.sign({ name: 'ECDSA', hash: 'SHA-256' }, signKey, bytes));
+}
+
+export async function verifyBytes(pub33, sig, bytes) {
+  try {
+    const key = await importSigningPublic(pub33);
+    return await subtle.verify({ name: 'ECDSA', hash: 'SHA-256' }, key, sig, bytes);
+  } catch {
+    return false;
+  }
 }
 
 export async function fingerprintOf(pub33) {
@@ -168,7 +204,7 @@ async function hkdf(ikm, salt, info, bytes = 32) {
 // invite = 0x01 | pub(33) | nonce(8) | name utf8 (<= 24 bytes)
 // shown as "GBR1-" + crockford base32. the same string goes in the qr code.
 
-const INVITE_VERSION = 1;
+const INVITE_VERSION = 2;
 export const INVITE_PREFIX = 'GBR1';
 const NAME_MAX_BYTES = 24;
 
@@ -181,10 +217,14 @@ function truncateUtf8(s, max) {
   return out;
 }
 
-export function buildInvite(pub33, name) {
+// v1 = 0x01 | ecdh pub(33) | nonce(8) | name
+// v2 = 0x02 | ecdh pub(33) | sign pub(33) | nonce(8) | name
+export function buildInvite(pub33, name, signPub33 = null) {
   const nonce = randomBytes(8);
   const nameBytes = utf8.encode(truncateUtf8(name.trim(), NAME_MAX_BYTES));
-  const bytes = concat(new Uint8Array([INVITE_VERSION]), pub33, nonce, nameBytes);
+  const bytes = signPub33
+    ? concat(new Uint8Array([INVITE_VERSION]), pub33, signPub33, nonce, nameBytes)
+    : concat(new Uint8Array([1]), pub33, nonce, nameBytes);
   return { nonce, text: `${INVITE_PREFIX}-${b32.encode(bytes)}` };
 }
 
@@ -194,12 +234,21 @@ export async function parseInvite(text) {
   const body = clean.slice(clean.indexOf(INVITE_PREFIX) + INVITE_PREFIX.length).replace(/^-/, '');
   const bytes = b32.decode(body);
   if (bytes.length < 1 + 33 + 8) throw new Error('pairing code too short');
-  if (bytes[0] !== INVITE_VERSION) throw new Error('unknown pairing code version');
+  const version = bytes[0];
+  if (version !== 1 && version !== 2) throw new Error('unknown pairing code version');
   const pub = bytes.slice(1, 34);
   decompressPoint(pub); // validates the point before we trust it
-  const nonce = bytes.slice(34, 42);
-  const name = utf8.decode(bytes.slice(42)) || 'unnamed device';
-  return { pub, nonce, name, fingerprint: await fingerprintOf(pub) };
+  let at = 34;
+  let signPub = null;
+  if (version === 2) {
+    if (bytes.length < 1 + 33 + 33 + 8) throw new Error('pairing code too short');
+    signPub = bytes.slice(34, 67);
+    decompressPoint(signPub);
+    at = 67;
+  }
+  const nonce = bytes.slice(at, at + 8);
+  const name = utf8.decode(bytes.slice(at + 8)) || 'unnamed device';
+  return { pub, signPub, nonce, name, fingerprint: await fingerprintOf(pub), version };
 }
 
 // both sides compute identical results regardless of who invited whom,
@@ -293,4 +342,62 @@ export function parseChunk(text) {
   const m = /^GBR3-([0-9A-Z]{4})-(\d+)-(\d+)-(.+)$/s.exec(text.trim().toUpperCase());
   if (!m) return null;
   return { tid: m[1], index: Number(m[2]), total: Number(m[3]), part: m[4] };
+}
+
+// ---------- beacon tags ----------
+// a pair shares a daily tag derived from the pair key. both devices subscribe to
+// it on the beacon; the beacon sees a random 64-hex string that changes every
+// day and cannot be linked to either identity.
+
+export function dayString(d = new Date()) {
+  return d.toISOString().slice(0, 10);
+}
+
+export async function inboxTag(pairKey, day = dayString()) {
+  return hex.encode(await hkdf(pairKey, utf8.encode(day), PROTO_INBOX, 32));
+}
+
+// ---------- rooms ----------
+// a room has an epoch key (32 bytes) that the founder replaces whenever the
+// roster shrinks. the beacon tag is derived from the epoch key, so a removed
+// member cannot even watch traffic volume after rotation.
+
+export function newRoomKey() { return randomBytes(32); }
+export function newRoomId() { return hex.encode(randomBytes(8)); }
+
+export async function roomTag(epochKey) {
+  return hex.encode(await hkdf(epochKey, new Uint8Array(32), PROTO_ROOM_TAG, 32));
+}
+
+function roomAad(roomId, epoch) {
+  return concat(PROTO_ROOM, utf8.encode(`|${roomId}|${epoch}`));
+}
+
+// frame = { v:1, e:epoch, iv, ct, sig }, all strings, opaque to the beacon.
+// the signature covers ct||iv so a frame cannot be re-keyed or re-noncd.
+export async function sealRoomMessage(epochKey, roomId, epoch, signKey, body) {
+  const iv = randomBytes(12);
+  const key = await subtle.importKey('raw', epochKey, 'AES-GCM', false, ['encrypt']);
+  const pt = utf8.encode(JSON.stringify(body));
+  const ct = new Uint8Array(await subtle.encrypt({ name: 'AES-GCM', iv, additionalData: roomAad(roomId, epoch) }, key, pt));
+  const sig = await signBytes(signKey, concat(ct, iv));
+  return { v: 1, e: epoch, iv: b64url.encode(iv), ct: b64url.encode(ct), sig: b64url.encode(sig) };
+}
+
+// returns { body, verified } or throws. verification needs the sender's signing
+// key, which the caller looks up from the roster after decryption.
+export async function openRoomMessage(epochKey, roomId, epoch, frame, lookupSignPub) {
+  if (!frame || frame.v !== 1 || typeof frame.ct !== 'string' || typeof frame.iv !== 'string' || typeof frame.sig !== 'string') throw new Error('malformed room frame');
+  const iv = b64url.decode(frame.iv);
+  const ct = b64url.decode(frame.ct);
+  if (iv.length !== 12 || ct.length < 16 || ct.length > 300_000) throw new Error('bad frame sizes');
+  const key = await subtle.importKey('raw', epochKey, 'AES-GCM', false, ['decrypt']);
+  const pt = await subtle.decrypt({ name: 'AES-GCM', iv, additionalData: roomAad(roomId, epoch) }, key, ct);
+  const body = JSON.parse(utf8.decode(new Uint8Array(pt)));
+  if (typeof body.fp !== 'string' || typeof body.id !== 'string' || typeof body.kind !== 'string') throw new Error('malformed room body');
+  const signPub = lookupSignPub(body.fp);
+  if (!signPub) throw new Error('sender is not a member');
+  const verified = await verifyBytes(signPub, b64url.decode(frame.sig), concat(ct, iv));
+  if (!verified) throw new Error('bad signature');
+  return body;
 }

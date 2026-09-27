@@ -1,10 +1,11 @@
 // gabriel console: the application. one module, hash routing, no framework.
 // state lives in memory while unlocked and is thrown away on lock.
 
-import { b64url, hex, b32, escapeHtml, fingerprintPretty, uuid, nowIso, relativeTime } from './util.js';
+import { b64url, b32, escapeHtml, fingerprintPretty, uuid, nowIso, relativeTime } from './util.js';
 import {
   cryptoAvailable, createVault, unlockVault, rewrapVault, sealRecord, openRecord,
-  generateIdentity, importPrivate, buildInvite, parseInvite, derivePair,
+  generateIdentity, generateSigningKey, importPrivate, importSigningPrivate,
+  buildInvite, parseInvite, derivePair,
   sealMessage, parseEnvelopeHeader, openMessage, chunkForQr, parseChunk,
   INVITE_PREFIX, ENVELOPE_PREFIX, CHUNK_PREFIX,
 } from './crypto.js';
@@ -12,87 +13,23 @@ import * as db from './db.js';
 import { renderQr } from './qr.js';
 import { cameraAvailable, startScanner } from './scan.js';
 import { registerServiceWorker, offlineReadiness, watchOnline } from './status.js';
+import { $, $$, toast, openOverlay, closeOverlay, confirmDialog, promptDialog, download, copyText } from './ui.js';
+import { state, DEFAULT_SETTINGS, resetUnlockedState, on } from './state.js';
+import { beacon, connectBeacon, disconnectBeacon, normalizeBeaconUrl } from './beacon.js';
+import {
+  loadRooms, createRoom, inviteDevice, removeMember, rotateEpoch, leaveRoom, deleteRoom,
+  loadMessages, sendRoomMessage, refreshSubscriptions, roomPeerCount, memberName,
+} from './rooms.js';
+import { call, joinCall, leaveCall, toggleMute, toggleVideo, snapshot as callSnapshot, resumeAudio } from './calls.js';
+import { notificationSupport, requestNotifications, notifyIncoming, clearNotifications } from './notify.js';
+import { installShield, applyShieldClass, shieldEnabled } from './shield.js';
+import { isStandalone, watchInstallPrompt, promptInstall, installInstructions } from './install.js';
+import {
+  currentPosition, watchPosition, distanceM, bearingDeg, fmtDistance, compassPoint,
+  startCompass, stopCompass, drawRadar, renderMap, tileSource, externalMapLinks,
+} from './geo.js';
 
-const $ = (s, r = document) => r.querySelector(s);
-const $$ = (s, r = document) => Array.from(r.querySelectorAll(s));
 const root = $('#root');
-
-const state = {
-  profile: null,      // { id:'profile', name, createdAt, kdf, wrap, version }
-  settings: { autoLockMinutes: 5 },
-  vaultKey: null,     // CryptoKey while unlocked
-  identity: null,     // { pub: Uint8Array, fingerprint, privateKey: CryptoKey }
-  devices: [],        // decrypted device records
-  notes: [],          // decrypted notes
-  route: 'overview',
-  lockTimer: null,
-  unlockedAt: null,
-  readiness: null,
-};
-
-// ---------- small ui helpers ----------
-
-let toastTimer = null;
-function toast(msg, kind = '') {
-  const t = $('#toast');
-  t.textContent = msg;
-  t.className = `toast show ${kind}`;
-  clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => t.classList.remove('show'), kind === 'error' ? 5200 : 3200);
-}
-
-function openOverlay(html) {
-  const o = $('#overlay');
-  $('#overlay-box').innerHTML = html;
-  o.hidden = false;
-  requestAnimationFrame(() => o.classList.add('show'));
-  return $('#overlay-box');
-}
-function closeOverlay() {
-  const o = $('#overlay');
-  o.classList.remove('show');
-  setTimeout(() => { o.hidden = true; $('#overlay-box').innerHTML = ''; }, 240);
-}
-$('#overlay').addEventListener('click', (e) => { if (e.target.id === 'overlay') closeOverlay(); });
-
-function confirmDialog({ title, body, okLabel = 'continue', danger = false, typeToConfirm = null }) {
-  return new Promise((resolve) => {
-    const box = openOverlay(`
-      <h3>${escapeHtml(title)}</h3>
-      <p style="margin-top:.6rem">${body}</p>
-      ${typeToConfirm ? `<div class="field" style="margin-top:1rem"><label>type <span class="mono">${escapeHtml(typeToConfirm)}</span> to continue</label><input type="text" id="confirm-input" autocomplete="off" autocapitalize="off" spellcheck="false"></div>` : ''}
-      <div class="row" style="margin-top:1.2rem;justify-content:flex-end">
-        <button class="ghost" id="c-no">cancel</button>
-        <button class="${danger ? 'danger' : 'primary'}" id="c-ok" ${typeToConfirm ? 'disabled' : ''}>${escapeHtml(okLabel)}</button>
-      </div>`);
-    const ok = $('#c-ok', box);
-    if (typeToConfirm) {
-      const input = $('#confirm-input', box);
-      input.focus();
-      input.addEventListener('input', () => { ok.disabled = input.value.trim() !== typeToConfirm; });
-    }
-    $('#c-no', box).onclick = () => { closeOverlay(); resolve(false); };
-    ok.onclick = () => { closeOverlay(); resolve(true); };
-  });
-}
-
-function download(filename, text, type = 'application/json') {
-  const blob = new Blob([text], { type });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url; a.download = filename; a.rel = 'noopener';
-  document.body.appendChild(a); a.click(); a.remove();
-  setTimeout(() => URL.revokeObjectURL(url), 2000);
-}
-
-async function copyText(text) {
-  try {
-    await navigator.clipboard.writeText(text);
-    toast('copied', 'ok');
-  } catch {
-    toast('clipboard blocked here; select the text and copy it by hand', 'error');
-  }
-}
 
 // ---------- lock / idle ----------
 
@@ -105,11 +42,10 @@ function armIdleLock() {
 for (const ev of ['pointerdown', 'keydown', 'touchstart']) document.addEventListener(ev, armIdleLock, { passive: true });
 
 function lock(reason) {
-  state.vaultKey = null;
-  state.identity = null;
-  state.devices = [];
-  state.notes = [];
-  state.unlockedAt = null;
+  stopLiveShare();
+  if (call.roomId) leaveCall().catch(() => {});
+  disconnectBeacon();
+  resetUnlockedState();
   clearTimeout(state.lockTimer);
   stopActiveScanner();
   stopFrameCycle();
@@ -126,17 +62,28 @@ $('#lock-btn').addEventListener('click', () => lock());
 async function loadProfile() {
   state.profile = (await db.get('meta', 'profile')) || null;
   const s = await db.get('meta', 'settings');
-  if (s) state.settings = { ...state.settings, ...s.value };
+  state.settings = { ...DEFAULT_SETTINGS, ...(s ? s.value : {}) };
+  applyShieldClass();
 }
 
 async function loadUnlockedData() {
   const idRec = await db.get('meta', 'identity');
   if (!idRec) throw new Error('identity record missing');
   const priv = await openRecord(state.vaultKey, 'meta', 'identity', idRec.enc);
+  // profiles from before rooms existed have no signing key: grow one now
+  if (!priv.signPkcs8) {
+    const sign = await generateSigningKey();
+    priv.signPkcs8 = b64url.encode(sign.pkcs8);
+    idRec.signPub = b64url.encode(sign.pub);
+    idRec.enc = await sealRecord(state.vaultKey, 'meta', 'identity', priv);
+    await db.put('meta', idRec);
+  }
   state.identity = {
     pub: b64url.decode(idRec.pub),
     fingerprint: idRec.fingerprint,
     privateKey: await importPrivate(b64url.decode(priv.pkcs8)),
+    signPub: b64url.decode(idRec.signPub),
+    signKey: await importSigningPrivate(b64url.decode(priv.signPkcs8)),
   };
   const devRecs = await db.all('devices');
   state.devices = [];
@@ -152,6 +99,7 @@ async function loadUnlockedData() {
   }
   state.notes.sort((a, b) => (b.updatedAt || '').localeCompare(a.updatedAt || ''));
   state.devices.sort((a, b) => (b.pairedAt || '').localeCompare(a.pairedAt || ''));
+  await loadRooms();
 }
 
 async function saveDevice(dev) {
@@ -171,6 +119,7 @@ async function saveNote(note) {
 
 async function saveSettings() {
   await db.put('meta', { id: 'settings', value: state.settings });
+  applyShieldClass();
 }
 
 // ---------- gate: create / unlock ----------
@@ -221,10 +170,10 @@ function renderCreate() {
     try {
       const v = await createVault(pass.value);
       const idn = await generateIdentity();
-      const enc = await sealRecord(v.vaultKey, 'meta', 'identity', { pkcs8: b64url.encode(idn.pkcs8) });
+      const enc = await sealRecord(v.vaultKey, 'meta', 'identity', { pkcs8: b64url.encode(idn.pkcs8), signPkcs8: b64url.encode(idn.signPkcs8) });
       const profile = { id: 'profile', name, createdAt: nowIso(), kdf: v.kdf, wrap: v.wrap, version: 1 };
       await db.put('meta', profile);
-      await db.put('meta', { id: 'identity', pub: b64url.encode(idn.pub), fingerprint: idn.fingerprint, enc });
+      await db.put('meta', { id: 'identity', pub: b64url.encode(idn.pub), signPub: b64url.encode(idn.signPub), fingerprint: idn.fingerprint, enc });
       await db.put('meta', { id: 'settings', value: state.settings });
       await db.requestPersistence();
       state.profile = profile;
@@ -277,14 +226,14 @@ function renderUnlock() {
 async function wipeEverything() {
   const ok = await confirmDialog({
     title: 'erase everything on this device',
-    body: 'profile, identity key, paired devices and notes are deleted. nothing can bring them back. paired devices will need to pair again.',
+    body: 'profile, identity key, paired devices, rooms and notes are deleted. nothing can bring them back. paired devices will need to pair again.',
     okLabel: 'erase', danger: true, typeToConfirm: 'erase',
   });
   if (!ok) return;
   try {
+    disconnectBeacon();
     await db.destroyDb();
-    if ('caches' in window) { /* keep the app cache: the console itself stays installed */ }
-    state.profile = null; state.vaultKey = null; state.identity = null; state.devices = []; state.notes = [];
+    state.profile = null; resetUnlockedState();
     renderGate();
     toast('erased', 'ok');
   } catch (err) {
@@ -296,9 +245,11 @@ async function wipeEverything() {
 
 const ROUTES = [
   ['overview', 'overview'],
+  ['rooms', 'rooms'],
   ['devices', 'devices'],
   ['notes', 'notes'],
   ['transfer', 'transfer'],
+  ['privacy', 'privacy'],
   ['settings', 'settings'],
 ];
 
@@ -309,7 +260,10 @@ async function enterApp() {
   $('#lock-btn').hidden = false;
   armIdleLock();
   renderShell();
-  if (!location.hash || !ROUTES.some(([r]) => location.hash === `#/${r}`)) location.hash = '#/overview';
+  if (state.settings.beaconAuto && state.settings.beaconUrl) {
+    try { connectBeacon(state.settings.beaconUrl, state.settings.beaconPassword); } catch (e) { toast(`beacon: ${e.message}`, 'error'); }
+  }
+  if (!location.hash || !ROUTES.some(([r]) => location.hash.startsWith(`#/${r}`))) location.hash = '#/overview';
   else route();
 }
 
@@ -319,12 +273,24 @@ function renderShell() {
       <nav class="sidenav" aria-label="sections">
         ${ROUTES.map(([r, label]) => `<a href="#/${r}" data-route="${r}">${label}</a>`).join('')}
         <div class="spacer"></div>
-        <div class="meta">unlocked ${relativeTime(state.unlockedAt)}<br>auto-lock ${state.settings.autoLockMinutes} min</div>
+        <div class="meta">unlocked ${relativeTime(state.unlockedAt)}<br>auto-lock ${state.settings.autoLockMinutes} min<br><span class="beaconchip" id="nav-beacon"><i></i><span>beacon off</span></span></div>
       </nav>
       <main class="content" id="content"></main>
     </div>`;
+  paintBeaconChip();
 }
 
+function paintBeaconChip() {
+  for (const el of $$('#nav-beacon, #top-beacon')) {
+    el.className = `beaconchip ${beacon.status}`;
+    const label = { off: 'beacon off', connecting: 'beacon…', on: 'beacon on', error: 'beacon error' }[beacon.status] || 'beacon';
+    el.querySelector('span').textContent = label;
+    el.title = beacon.lastError || beacon.url || '';
+  }
+}
+on('beacon:status', paintBeaconChip);
+
+let currentRoomId = null;
 function route() {
   if (!state.vaultKey) {
     // lock() already drew the gate; the hashchange it caused must not redraw
@@ -332,13 +298,18 @@ function route() {
     if (!$('#unlock-form') && !$('#create-form')) renderGate();
     return;
   }
-  const r = (location.hash.replace(/^#\/?/, '') || 'overview').split('/')[0];
+  const parts = location.hash.replace(/^#\/?/, '').split('/');
+  const r = parts[0] || 'overview';
   state.route = ROUTES.some(([x]) => x === r) ? r : 'overview';
   $$('.sidenav a').forEach((a) => a.classList.toggle('active', a.dataset.route === state.route));
   stopActiveScanner();
   stopFrameCycle();
-  const view = { overview: viewOverview, devices: viewDevices, notes: viewNotes, transfer: viewTransfer, settings: viewSettings }[state.route];
-  view($('#content'));
+  stopCompass();
+  currentRoomId = null;
+  const el = $('#content');
+  if (state.route === 'rooms' && parts[1]) { viewRoom(el, parts[1]); return; }
+  const view = { overview: viewOverview, rooms: viewRooms, devices: viewDevices, notes: viewNotes, transfer: viewTransfer, privacy: viewPrivacy, settings: viewSettings }[state.route];
+  view(el);
 }
 window.addEventListener('hashchange', route);
 
@@ -347,21 +318,23 @@ window.addEventListener('hashchange', route);
 async function viewOverview(el) {
   const r = state.readiness || await offlineReadiness();
   state.readiness = r;
-  const standalone = window.matchMedia('(display-mode: standalone)').matches || navigator.standalone === true;
+  const standalone = isStandalone();
+  const live = state.rooms.filter((x) => !x.left).length;
   el.innerHTML = `
     <section>
       <h2>${escapeHtml(state.profile.name)}</h2>
-      <div class="sub">this device, sealed. ${state.devices.length} paired device${state.devices.length === 1 ? '' : 's'}, ${state.notes.length} note${state.notes.length === 1 ? '' : 's'}.</div>
+      <div class="sub">this device, sealed. ${state.devices.length} paired device${state.devices.length === 1 ? '' : 's'}, ${live} room${live === 1 ? '' : 's'}, ${state.notes.length} note${state.notes.length === 1 ? '' : 's'}.</div>
       <div class="grid">
         <div class="card ${r.ready ? 'trust' : ''}">
           <div class="stat"><div class="k">offline</div><div class="v">${r.ready ? 'ready' : 'not yet'}</div><div class="d">${r.ready ? 'every file is cached on this device. the network can go.' : 'the cache is still filling, or this browser blocks it.'}</div></div>
         </div>
+        <div class="card ${beacon.status === 'on' ? 'trust' : ''}">
+          <div class="stat"><div class="k">beacon</div><div class="v">${{ on: 'connected', connecting: 'connecting', error: 'error', off: 'off' }[beacon.status]}</div><div class="d">${beacon.status === 'on' ? `rooms and calls run through ${escapeHtml(beacon.info && beacon.info.name ? beacon.info.name : 'the beacon')} on this network.` : 'rooms and calls need a beacon on the local network. set one in privacy.'}</div></div>
+        </div>
         <div class="card">
           <div class="stat"><div class="k">identity</div><div class="v" style="font-size:1rem" title="${escapeHtml(state.identity.fingerprint)}"><span class="fp">${fingerprintPretty(state.identity.fingerprint)}</span></div><div class="d">fingerprint of this device's pairing key. other devices see it when they pair with you.</div></div>
         </div>
-        <div class="card">
-          <div class="stat"><div class="k">since</div><div class="v">${new Date(state.profile.createdAt).toLocaleDateString()}</div><div class="d">profile created on this device. last unlock ${relativeTime(state.unlockedAt)}.</div></div>
-        </div>
+        ${standalone ? '' : `<div class="card"><div class="stat"><div class="k">install</div><div class="v" style="font-size:1.2rem">${state.installPrompt ? 'one tap away' : 'from the browser menu'}</div><div class="d">installed, it opens like any app and works with the network off.</div><div class="row" style="margin-top:.8rem"><button class="small" id="ov-install">${state.installPrompt ? 'install' : 'how'}</button></div></div></div>`}
       </div>
       <div class="divider"></div>
       <h3>readiness, measured now</h3>
@@ -370,25 +343,39 @@ async function viewOverview(el) {
         ${readinessRow('web cryptography', r.crypto, 'available', 'missing')}
         ${readinessRow('offline worker', r.controlled, 'controlling this page', 'not active')}
         ${readinessRow('app files cached', r.cached, 'complete', 'incomplete')}
-        ${readinessRow('installed to home screen', standalone, 'yes', 'no (optional: browser menu → add to home screen)', true)}
-        <div class="item"><span class="k">network right now</span><span class="v">${r.online ? 'connected, unused' : 'offline, unaffected'}</span></div>
+        ${readinessRow('installed', standalone, 'yes', 'no (optional)', true)}
+        ${readinessRow('shield', shieldEnabled(), 'on: messages blur until held, app veils when hidden', 'off', true)}
+        <div class="item"><span class="k">network right now</span><span class="v">${r.online ? 'connected, unused except for a beacon you chose' : 'offline, unaffected'}</span></div>
       </div>
       <div class="divider"></div>
       <div class="row">
+        <a href="#/rooms"><button>open a room</button></a>
         <a href="#/devices"><button>pair a device</button></a>
         <a href="#/notes"><button>write a note</button></a>
-        <a href="#/transfer"><button>hand something across</button></a>
       </div>
     </section>`;
+  const ib = $('#ov-install');
+  if (ib) ib.onclick = installFlow;
 }
 
 function readinessRow(k, ok, yes, no, neutral = false) {
   return `<div class="item"><span class="k">${k}</span><span class="v ${ok ? 'on' : neutral ? '' : 'off'}">${ok ? yes : no}</span></div>`;
 }
 
+async function installFlow() {
+  if (state.installPrompt) {
+    const outcome = await promptInstall();
+    if (outcome === 'accepted') toast('installed', 'ok');
+    return;
+  }
+  const i = installInstructions();
+  openOverlay(`<h3>install on ${escapeHtml(i.title)}</h3><ol class="steps" style="margin-top:1rem">${i.steps.map((s) => `<li><strong>${escapeHtml(s)}</strong></li>`).join('')}</ol><p style="margin-top:1rem;color:var(--muted)">no store, no account. the installed copy is this page, cached, opening in its own window.</p><div class="row" style="justify-content:flex-end;margin-top:1rem"><button class="primary" id="ins-ok">ok</button></div>`);
+  $('#ins-ok').onclick = closeOverlay;
+}
+
 // ---------- devices + pairing ----------
 
-let pairing = null; // { myInvite:{nonce,text}, theirs:{pub,nonce,name,fingerprint}|null, derived:{pairKey,sas}|null }
+let pairing = null; // { myInvite:{nonce,text}, theirs, derived }
 
 function viewDevices(el) {
   pairing = null;
@@ -410,7 +397,7 @@ function renderDeviceList() {
   }
   list.innerHTML = state.devices.map((d) => `
     <div class="item-row ${d.verified ? 'trust' : ''}" data-id="${d.id}">
-      <div class="t"><div class="name">${escapeHtml(d.name)}</div><p class="sub mono" title="${escapeHtml(d.fingerprint)}">${fingerprintPretty(d.fingerprint)}</p><p class="sub">paired ${relativeTime(d.pairedAt)}${d.lastTransferAt ? ` · last transfer ${relativeTime(d.lastTransferAt)}` : ''}</p></div>
+      <div class="t"><div class="name">${escapeHtml(d.name)}</div><p class="sub mono" title="${escapeHtml(d.fingerprint)}">${fingerprintPretty(d.fingerprint)}</p><p class="sub">paired ${relativeTime(d.pairedAt)}${d.lastTransferAt ? ` · last transfer ${relativeTime(d.lastTransferAt)}` : ''}${d.signPub ? '' : ' · older code: cannot join rooms until re-paired'}</p></div>
       <div class="a"><button class="small ghost" data-act="rename">rename</button><button class="small danger" data-act="forget">forget</button></div>
     </div>`).join('');
   list.onclick = async (e) => {
@@ -420,28 +407,24 @@ function renderDeviceList() {
     const dev = state.devices.find((d) => d.id === row.dataset.id);
     if (!dev) return;
     if (btn.dataset.act === 'forget') {
-      const ok = await confirmDialog({ title: `forget ${dev.name}`, body: 'the shared key is deleted here. the other device keeps its copy until it forgets you too.', okLabel: 'forget', danger: true });
+      const ok = await confirmDialog({ title: `forget ${dev.name}`, body: 'the shared key is deleted here. the other device keeps its copy until it forgets you too. rooms you share stay, but this device can no longer be reached directly.', okLabel: 'forget', danger: true });
       if (!ok) return;
       await db.del('devices', dev.id);
       state.devices = state.devices.filter((d) => d.id !== dev.id);
+      await refreshSubscriptions();
       renderDeviceList();
       toast('forgotten');
     } else if (btn.dataset.act === 'rename') {
-      const box = openOverlay(`<h3>rename device</h3><div class="field" style="margin-top:1rem"><label>name</label><input type="text" id="rn" maxlength="40" value="${escapeHtml(dev.name)}"></div><div class="row" style="justify-content:flex-end"><button class="ghost" id="rn-no">cancel</button><button class="primary" id="rn-ok">save</button></div>`);
-      $('#rn', box).focus();
-      $('#rn-no', box).onclick = closeOverlay;
-      $('#rn-ok', box).onclick = async () => {
-        const name = $('#rn', box).value.trim();
-        if (!name) return;
-        await saveDevice({ ...dev, name });
-        closeOverlay(); renderDeviceList();
-      };
+      const name = await promptDialog({ title: 'rename device', label: 'name', value: dev.name, maxlength: 40 });
+      if (!name) return;
+      await saveDevice({ ...dev, name });
+      renderDeviceList();
     }
   };
 }
 
 function viewPairing(el) {
-  const inv = buildInvite(state.identity.pub, state.profile.name);
+  const inv = buildInvite(state.identity.pub, state.profile.name, state.identity.signPub);
   pairing = { myInvite: inv, theirs: null, derived: null };
   el.innerHTML = `
     <section>
@@ -452,7 +435,7 @@ function viewPairing(el) {
           <div class="qrwrap"><div class="qrframe"><canvas id="my-qr" aria-label="your pairing code"></canvas></div></div>
           <div class="codebox" id="my-code">${escapeHtml(b32.group(inv.text))}</div>
           <div class="row" style="margin-top:.8rem"><button class="small" id="copy-mine">copy text</button><button class="small ghost" id="regen-mine">new code</button></div>
-          <p class="hint" style="color:var(--dim);font-size:.8rem;margin-top:.8rem">contains this device's public key, a one-time number and your name. safe to show; useless to anyone who does not also hold the private key.</p>
+          <p class="hint" style="color:var(--dim);font-size:.8rem;margin-top:.8rem">contains this device's public keys, a one-time number and your name. safe to show; useless to anyone who does not also hold the private keys.</p>
         </div>
         <div class="card">
           <h3>their code</h3>
@@ -479,7 +462,7 @@ function renderTheirState() {
   if (!box) return;
   if (!pairing.theirs) { box.innerHTML = `<p class="hint" style="color:var(--muted)">nothing read yet.</p>`; return; }
   const t = pairing.theirs;
-  box.innerHTML = `<div class="card" style="padding:.9rem 1rem;background:var(--bg-deep)"><div>${escapeHtml(t.name)}</div><div class="mono" style="color:var(--muted);font-size:.8rem;margin-top:.3rem">${fingerprintPretty(t.fingerprint)}</div></div>`;
+  box.innerHTML = `<div class="card" style="padding:.9rem 1rem;background:var(--bg-deep)"><div>${escapeHtml(t.name)}</div><div class="mono" style="color:var(--muted);font-size:.8rem;margin-top:.3rem">${fingerprintPretty(t.fingerprint)}</div>${t.signPub ? '' : '<div style="color:var(--danger);font-size:.8rem;margin-top:.3rem">older code without a signing key: pairing works, rooms will not</div>'}</div>`;
 }
 
 async function acceptTheirInvite(text, el, fromScanner = false) {
@@ -514,6 +497,7 @@ function renderSas(el) {
       id: existing ? existing.id : uuid(),
       name: t.name,
       pub: b64url.encode(t.pub),
+      signPub: t.signPub ? b64url.encode(t.signPub) : null,
       fingerprint: t.fingerprint,
       pairKey: b64url.encode(pairing.derived.pairKey),
       verified: true,
@@ -521,6 +505,7 @@ function renderSas(el) {
       lastTransferAt: existing ? existing.lastTransferAt : null,
     };
     await saveDevice(dev);
+    await refreshSubscriptions();
     $('#sas').classList.add('matched');
     toast(`paired with ${t.name}`, 'ok');
     setTimeout(() => viewDevices(el), 900);
@@ -549,6 +534,258 @@ function openScanner(onText, caption) {
 function closeScanner() { stopActiveScanner(); closeOverlay(); }
 function stopActiveScanner() { if (activeScanner) { activeScanner.stop(); activeScanner = null; } }
 
+// ---------- rooms ----------
+
+function viewRooms(el) {
+  const rooms = state.rooms.filter((r) => !r.left);
+  el.innerHTML = `
+    <section>
+      <div class="row between"><div><h2>rooms</h2><div class="sub">group conversations and calls, sealed end to end, carried by a beacon on the local network.</div></div><button class="primary" id="room-new">new room</button></div>
+      ${beacon.status === 'on' ? '' : `<div class="card" style="margin-bottom:1rem"><p>no beacon connected. rooms still open and keep their history; sending needs a beacon. <a href="#/privacy">set one up</a>.</p></div>`}
+      <div class="list" id="room-list">${rooms.length ? rooms.map((r) => `
+        <div class="item-row" data-id="${r.id}">
+          <div class="t"><div class="name">${escapeHtml(r.name)}</div><p class="sub">${r.members.length} member${r.members.length === 1 ? '' : 's'} · ${roomPeerCount(r)} here now · ${r.founderFp === state.identity.fingerprint ? 'you founded it' : `founded by ${escapeHtml(memberName(r, r.founderFp))}`} · ${relativeTime(r.updatedAt)}</p></div>
+          <div class="a"><a href="#/rooms/${r.id}"><button class="small">open</button></a></div>
+        </div>`).join('') : '<div class="empty">no rooms yet. found one and add people you have paired with.</div>'}</div>
+      <p class="locked-note">a room can only contain devices the founder has paired with in person. that is the whole membership system: no accounts, no invites by link.</p>
+    </section>`;
+  $('#room-new').onclick = async () => {
+    const name = await promptDialog({ title: 'new room', label: 'name', placeholder: 'north stairwell', maxlength: 60 });
+    if (!name) return;
+    const room = await createRoom(name);
+    location.hash = `#/rooms/${room.id}`;
+  };
+}
+
+let liveShareStop = null;
+let liveShareRoomId = null;
+function stopLiveShare() { if (liveShareStop) { liveShareStop(); liveShareStop = null; liveShareRoomId = null; } }
+
+let myPos = null; // last position this device read for itself, memory only
+
+async function viewRoom(el, roomId) {
+  const room = state.rooms.find((r) => r.id === roomId);
+  if (!room) { location.hash = '#/rooms'; return; }
+  currentRoomId = roomId;
+  clearNotifications(`#/rooms/${roomId}`);
+  const founder = room.founderFp === state.identity.fingerprint;
+  el.innerHTML = `
+    <section>
+      <div class="roomhead">
+        <div><h2>${escapeHtml(room.name)}</h2><div class="members" id="room-members"></div></div>
+        <div class="row">
+          <button class="small ghost" id="room-people">people</button>
+          <button class="small ghost" id="room-where">where</button>
+          <button class="small ${call.roomId === roomId ? 'danger' : 'accent'}" id="room-call">${call.roomId === roomId ? 'leave call' : 'call'}</button>
+        </div>
+      </div>
+      <div id="call-panel"></div>
+      <div class="shield-hint">shielded: press and hold a message to read it. it blurs again when you let go.</div>
+      <div class="timeline" id="timeline"></div>
+      <div class="composer">
+        <textarea id="compose" rows="1" placeholder="${beacon.status === 'on' ? 'message the room' : 'connect a beacon to send'}" maxlength="4000"></textarea>
+        <button class="primary" id="send">send</button>
+      </div>
+    </section>`;
+  paintMembers(room);
+  const tl = $('#timeline');
+  const msgs = await loadMessages(roomId);
+  tl.innerHTML = msgs.map((m) => bubble(room, m)).join('') || '<div class="sysline">nothing yet</div>';
+  tl.scrollTop = tl.scrollHeight;
+  const compose = $('#compose');
+  const doSend = async () => {
+    const text = compose.value.trim();
+    if (!text) return;
+    try {
+      await sendRoomMessage(room, 'text', { text });
+      compose.value = ''; compose.style.height = '';
+    } catch (e) { toast(e.message, 'error'); }
+  };
+  $('#send').onclick = doSend;
+  compose.addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); doSend(); } });
+  compose.addEventListener('input', () => { compose.style.height = 'auto'; compose.style.height = `${Math.min(compose.scrollHeight, 160)}px`; });
+  $('#room-people').onclick = () => peopleSheet(room, founder);
+  $('#room-where').onclick = () => whereSheet(room);
+  $('#room-call').onclick = async () => {
+    if (call.roomId === roomId) { await leaveCall(); return; }
+    if (call.roomId) return toast('already in a call in another room', 'error');
+    try { await joinCall(room); toast('in the call: your microphone is live', 'ok'); }
+    catch (e) { toast(`call: ${e.message}`, 'error'); }
+  };
+  paintCallPanel();
+}
+
+function bubble(room, m) {
+  const mine = m.fp === state.identity.fingerprint;
+  const who = mine ? 'you' : memberName(room, m.fp);
+  const when = new Date(m.ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  if (m.kind === 'location') {
+    const rel = myPos ? `${fmtDistance(distanceM(myPos, m))} ${compassPoint(bearingDeg(myPos, m))} of you` : `±${m.acc || '?'} m`;
+    return `<div class="bubble loc ${mine ? 'mine' : ''}" data-id="${m.id}"><div class="who">${escapeHtml(who)} · location${m.live ? ' · live' : ''}</div><div class="txt" data-shielded>${Number(m.lat).toFixed(5)}, ${Number(m.lon).toFixed(5)}<br>${escapeHtml(rel)}</div><div class="when">${when}</div></div>`;
+  }
+  return `<div class="bubble ${mine ? 'mine' : ''}" data-id="${m.id}"><div class="who">${escapeHtml(who)}</div><div class="txt" data-shielded>${escapeHtml(m.text || '')}</div><div class="when">${when}</div></div>`;
+}
+
+function paintMembers(room) {
+  const el = $('#room-members');
+  if (!el) return;
+  el.textContent = `${room.members.map((m) => (m.fp === state.identity.fingerprint ? 'you' : m.name)).join(', ')} · ${roomPeerCount(room)} here now`;
+}
+
+on('room:message', ({ roomId, msg, mine, replay, sender }) => {
+  const room = state.rooms.find((r) => r.id === roomId);
+  if (!room) return;
+  if (roomId === currentRoomId) {
+    const tl = $('#timeline');
+    if (tl) {
+      if (tl.querySelector('.sysline')) tl.innerHTML = '';
+      const atBottom = tl.scrollHeight - tl.scrollTop - tl.clientHeight < 80;
+      tl.insertAdjacentHTML('beforeend', bubble(room, msg));
+      if (atBottom || mine) tl.scrollTop = tl.scrollHeight;
+    }
+  }
+  if (!mine && !replay) notifyIncoming({ senderName: sender ? sender.name : 'someone', roomName: room.name, route: `#/rooms/${roomId}` });
+});
+on('rooms:changed', ({ roomId, reason, who }) => {
+  const room = state.rooms.find((r) => r.id === roomId);
+  if (state.route === 'rooms' && !currentRoomId) route();
+  if (roomId === currentRoomId && room) {
+    paintMembers(room);
+    const tl = $('#timeline');
+    if (tl && reason === 'left' && who) tl.insertAdjacentHTML('beforeend', `<div class="sysline">${escapeHtml(who.name)} left</div>`);
+    if (tl && reason === 'rotated') tl.insertAdjacentHTML('beforeend', '<div class="sysline">the room key was rotated</div>');
+  }
+  if (reason === 'invited' && room) toast(`added to ${room.name}`, 'ok');
+});
+on('beacon:count', () => { const room = state.rooms.find((r) => r.id === currentRoomId); if (room) paintMembers(room); });
+
+async function peopleSheet(room, founder) {
+  const candidates = state.devices.filter((d) => d.signPub && !room.members.some((m) => m.fp === d.fingerprint));
+  const box = openOverlay(`
+    <div class="row between"><h3>people in ${escapeHtml(room.name)}</h3><button class="ghost small" id="pp-close">close</button></div>
+    <div class="list" style="margin-top:1rem">${room.members.map((m) => `
+      <div class="item-row"><div class="t"><div class="name">${m.fp === state.identity.fingerprint ? 'you' : escapeHtml(m.name)}</div><p class="sub mono">${fingerprintPretty(m.fp)}</p></div>
+      ${founder && m.fp !== state.identity.fingerprint ? `<div class="a"><button class="small danger" data-remove="${m.fp}">remove</button></div>` : ''}</div>`).join('')}</div>
+    ${founder ? `<div class="divider"></div><h3>add a paired device</h3>${candidates.length ? `<div class="list" style="margin-top:.8rem">${candidates.map((d) => `<div class="item-row"><div class="t"><div class="name">${escapeHtml(d.name)}</div></div><div class="a"><button class="small accent" data-add="${d.id}">add</button></div></div>`).join('')}</div>` : '<p style="color:var(--muted);margin-top:.6rem">everyone you are paired with is already here, or paired with an older code.</p>'}
+      <div class="divider"></div><div class="row"><button class="small" id="pp-rotate">rotate key now</button><span class="hint" style="color:var(--dim)">issue a fresh epoch key to current members</span></div>` : ''}
+    <div class="divider"></div>
+    <div class="row"><button class="small danger" id="pp-leave">${founder ? 'delete room here' : 'leave room'}</button></div>`);
+  $('#pp-close', box).onclick = closeOverlay;
+  box.onclick = async (e) => {
+    const add = e.target.closest('[data-add]'); const rem = e.target.closest('[data-remove]');
+    if (add) {
+      const dev = state.devices.find((d) => d.id === add.dataset.add);
+      try { await inviteDevice(room, dev); toast(`${dev.name} added`, 'ok'); closeOverlay(); paintMembers(room); }
+      catch (err) { toast(err.message, 'error'); }
+    } else if (rem) {
+      const ok = await confirmDialog({ title: 'remove from room', body: 'they stop receiving new messages; the room key is rotated for everyone else.', okLabel: 'remove', danger: true });
+      if (!ok) return;
+      try { const failed = await removeMember(room, rem.dataset.remove); toast(failed.length ? `removed; could not reach ${failed.join(', ')} with the new key` : 'removed and key rotated', failed.length ? 'error' : 'ok'); closeOverlay(); paintMembers(room); }
+      catch (err) { toast(err.message, 'error'); }
+    }
+  };
+  const rot = $('#pp-rotate', box);
+  if (rot) rot.onclick = async () => { const failed = await rotateEpoch(room); toast(failed.length ? `rotated; could not reach ${failed.join(', ')}` : 'key rotated', failed.length ? 'error' : 'ok'); closeOverlay(); };
+  $('#pp-leave', box).onclick = async () => {
+    const ok = await confirmDialog({ title: founder ? 'delete this room here' : 'leave this room', body: founder ? 'members keep their copies and can keep talking, but nobody can add people or rotate the key without you.' : 'your copy of the history is deleted. the founder can add you again.', okLabel: founder ? 'delete' : 'leave', danger: true });
+    if (!ok) return;
+    if (call.roomId === room.id) await leaveCall();
+    await leaveRoom(room);
+    await deleteRoom(room.id);
+    closeOverlay();
+    location.hash = '#/rooms';
+  };
+}
+
+// ---------- location ----------
+
+async function whereSheet(room) {
+  const msgs = (await loadMessages(room.id)).filter((m) => m.kind === 'location');
+  const latest = new Map();
+  for (const m of msgs) if (m.fp !== state.identity.fingerprint) latest.set(m.fp, m);
+  const points = Array.from(latest.values()).map((m) => ({ ...m, lat: Number(m.lat), lon: Number(m.lon), label: memberName(room, m.fp), stale: Date.now() - new Date(m.ts).getTime() > 15 * 60 * 1000 })).filter((p) => Number.isFinite(p.lat) && Number.isFinite(p.lon));
+  const src = tileSource();
+  const box = openOverlay(`
+    <div class="row between"><h3>where</h3><button class="ghost small" id="wh-close">close</button></div>
+    <p style="margin-top:.6rem;color:var(--muted);font-size:.9rem">nothing is read from this device's location until you tap share. what you share goes sealed to this room only.</p>
+    <div class="row" style="margin-top:.8rem"><button class="accent small" id="wh-share">share where i am once</button><button class="small ${liveShareRoomId === room.id ? 'danger' : ''}" id="wh-live">${liveShareRoomId === room.id ? 'stop live sharing' : 'share live (every 20 s)'}</button><button class="small ghost" id="wh-locate">locate me for the radar</button></div>
+    <div id="wh-status" class="hint" style="color:var(--dim);margin-top:.6rem"></div>
+    <div class="radar"><canvas id="radar" width="320" height="320"></canvas></div>
+    <div id="wh-list" class="list"></div>
+    ${src ? '<div class="mapbox" id="wh-map" style="margin-top:1rem"></div>' : '<p class="hint" style="color:var(--dim);margin-top:.8rem">no map tiles enabled (privacy → map). the radar above needs none.</p>'}
+  `);
+  $('#wh-close', box).onclick = () => { closeOverlay(); stopCompass(); };
+  const canvas = $('#radar', box);
+  let heading = null;
+  const paint = () => {
+    if (myPos) drawRadar(canvas, myPos, points, heading);
+    else { const ctx = canvas.getContext('2d'); ctx.clearRect(0, 0, canvas.width, canvas.height); }
+    $('#wh-list', box).innerHTML = points.length ? points.map((p) => `<div class="item-row"><div class="t"><div class="name">${escapeHtml(p.label)}${p.stale ? ' <span style="color:var(--dim)">(old)</span>' : ''}</div><p class="sub">${myPos ? `${fmtDistance(distanceM(myPos, p))} · bearing ${Math.round(bearingDeg(myPos, p))}° ${compassPoint(bearingDeg(myPos, p))}` : `${p.lat.toFixed(5)}, ${p.lon.toFixed(5)}`} · ±${p.acc || '?'} m · ${relativeTime(p.ts)}</p><p class="sub">${externalMapLinks(p).map((l) => `<a href="${escapeHtml(l.href)}" target="_blank" rel="noopener noreferrer">${l.label}</a>`).join(' · ')}</p></div></div>`).join('') : '<div class="empty">nobody in this room has shared a location yet.</div>';
+  };
+  paint();
+  if (src) renderMap($('#wh-map', box), myPos, points).catch((e) => toast(`map: ${e.message}`, 'error'));
+  const status = (t) => { $('#wh-status', box).textContent = t; };
+  $('#wh-locate', box).onclick = async () => {
+    status('reading position…');
+    try {
+      myPos = await currentPosition();
+      status(`you: ${myPos.lat.toFixed(5)}, ${myPos.lon.toFixed(5)} ±${myPos.acc} m (kept in memory only)`);
+      paint();
+      await startCompass((h) => { heading = h; paint(); });
+    } catch (e) { status(e.message); }
+  };
+  $('#wh-share', box).onclick = async () => {
+    status('reading position…');
+    try {
+      myPos = await currentPosition();
+      await sendRoomMessage(room, 'location', { lat: myPos.lat, lon: myPos.lon, acc: myPos.acc, live: false });
+      status('shared once with this room');
+      paint();
+    } catch (e) { status(e.message); }
+  };
+  $('#wh-live', box).onclick = async () => {
+    const b = $('#wh-live', box);
+    if (liveShareRoomId === room.id) { stopLiveShare(); status('live sharing stopped'); b.textContent = 'share live (every 20 s)'; b.classList.remove('danger'); return; }
+    stopLiveShare();
+    try {
+      liveShareStop = watchPosition(async (p) => {
+        myPos = p;
+        try { await sendRoomMessage(room, 'location', { lat: p.lat, lon: p.lon, acc: p.acc, live: true }); } catch { /* beacon gone; keep watching */ }
+      }, { minIntervalMs: 20000 });
+      liveShareRoomId = room.id;
+      status('live: this room gets your position every 20 s until you stop or lock');
+      b.textContent = 'stop live sharing'; b.classList.add('danger');
+    } catch (e) { status(e.message); }
+  };
+}
+
+// ---------- calls ----------
+
+function paintCallPanel() {
+  const panel = $('#call-panel');
+  if (!panel) return;
+  const s = callSnapshot();
+  const btn = $('#room-call');
+  if (btn) { btn.textContent = s.active && s.roomId === currentRoomId ? 'leave call' : 'call'; btn.className = `small ${s.active && s.roomId === currentRoomId ? 'danger' : 'accent'}`; }
+  if (!s.active || s.roomId !== currentRoomId) { panel.innerHTML = ''; return; }
+  const room = state.rooms.find((r) => r.id === s.roomId);
+  const mins = Math.floor((Date.now() - s.since) / 60000);
+  panel.innerHTML = `
+    <div class="callpanel">
+      <div class="row between"><div><span class="pulse"></span>in the call · ${mins} min · peer to peer on this network</div><div class="row"><button class="small ${s.muted ? 'accent' : ''}" id="c-mute">${s.muted ? 'unmute' : 'mute'}</button><button class="small ${s.video ? 'accent' : ''}" id="c-video">${s.video ? 'camera off' : 'camera'}</button><button class="small ghost" id="c-audio">sound</button></div></div>
+      <div class="who">${s.peers.length ? s.peers.map((p) => `<span class="${p.state === 'connected' ? 'on' : p.state === 'failed' ? 'off' : ''}">${escapeHtml(memberName(room, p.fp))} · ${p.state}</span>`).join('') : '<span>waiting for others to join</span>'}</div>
+      <div class="videos" id="c-videos"></div>
+      <p class="hint" style="color:var(--dim);font-size:.78rem;margin:0">audio and video go straight between phones, encrypted, never through the beacon. if a peer stays at "connecting", this wi-fi isolates its clients; chat still works.</p>
+    </div>`;
+  const vids = $('#c-videos');
+  for (const [, p] of call.peers) if (p.videoEl) vids.appendChild(p.videoEl);
+  $('#c-mute').onclick = toggleMute;
+  $('#c-video').onclick = () => toggleVideo().catch((e) => toast(`camera: ${e.message}`, 'error'));
+  $('#c-audio').onclick = resumeAudio;
+}
+on('call:state', paintCallPanel);
+setInterval(() => { if (call.roomId && call.roomId === currentRoomId) paintCallPanel(); }, 30000);
+
 // ---------- notes ----------
 
 function viewNotes(el) {
@@ -566,10 +803,11 @@ function renderNoteList(el) {
   if (!state.notes.length) { list.innerHTML = `<div class="empty">nothing written yet.</div>`; return; }
   list.innerHTML = state.notes.map((n) => `
     <div class="item-row" data-id="${n.id}">
-      <div class="t"><div class="name">${escapeHtml(n.title || 'untitled')}</div><p class="sub">${escapeHtml((n.body || '').slice(0, 90))}${(n.body || '').length > 90 ? '…' : ''}</p><p class="sub">${n.from ? `from ${escapeHtml(n.from)} · ` : ''}${relativeTime(n.updatedAt)}</p></div>
+      <div class="t"><div class="name">${escapeHtml(n.title || 'untitled')}</div><p class="sub" data-shielded>${escapeHtml((n.body || '').slice(0, 90))}${(n.body || '').length > 90 ? '…' : ''}</p><p class="sub">${n.from ? `from ${escapeHtml(n.from)} · ` : ''}${relativeTime(n.updatedAt)}</p></div>
       <div class="a"><button class="small ghost" data-act="open">open</button></div>
     </div>`).join('');
   list.onclick = (e) => {
+    if (e.target.closest('[data-shielded]')) return;
     const row = e.target.closest('.item-row');
     if (!row) return;
     editNote(el, state.notes.find((n) => n.id === row.dataset.id));
@@ -583,7 +821,7 @@ function editNote(el, note) {
     <section class="note-editor">
       <div class="row between"><h2>${isNew ? 'new note' : 'note'}</h2><div class="row"><button class="ghost" id="n-back">back</button>${isNew ? '' : '<button class="danger small" id="n-del">delete</button>'}</div></div>
       <div class="field" style="margin-top:1.2rem"><label for="n-title">title</label><input id="n-title" type="text" maxlength="120" value="${escapeHtml(n.title)}"></div>
-      <div class="field"><label for="n-body">body</label><textarea id="n-body" maxlength="6000">${escapeHtml(n.body)}</textarea><div class="hint">up to 6000 characters. anything longer than about 700 characters becomes a multi-frame code when handed across.</div></div>
+      <div class="field"><label for="n-body">body</label><textarea id="n-body" maxlength="6000">${escapeHtml(n.body)}</textarea><div class="hint">up to 6000 characters. anything longer than about 500 characters becomes a multi-frame code when handed across.</div></div>
       <div class="row"><button class="primary" id="n-save">save</button>${isNew ? '' : '<a href="#/transfer"><button>hand across</button></a>'}<span class="hint" style="color:var(--dim)">${n.from ? `received from ${escapeHtml(n.from)} · ` : ''}${isNew ? '' : `edited ${relativeTime(n.updatedAt)}`}</span></div>
     </section>`;
   $('#n-back').onclick = () => viewNotes(el);
@@ -745,16 +983,135 @@ async function openEnvelope(text, box) {
     <div class="card trust">
       <div class="eyebrow">from ${escapeHtml(sender.name)} · ${relativeTime(body.ts)}</div>
       <h3>${escapeHtml(body.title || 'untitled')}</h3>
-      <p style="white-space:pre-wrap;margin-top:.6rem">${escapeHtml(body.body || '')}</p>
+      <p style="white-space:pre-wrap;margin-top:.6rem" data-shielded>${escapeHtml(body.body || '')}</p>
       <div class="row" style="margin-top:1rem"><button class="accent" id="r-save">save as note</button></div>
     </div>`;
   $('#r-save', out).onclick = async () => {
-    await saveNote({ id: uuid(), title: body.title || '', body: body.body || '', from: sender.name, createdAt: body.ts || nowIso(), updatedAt: nowIso() });
+    await saveNote({ id: uuid(), title: String(body.title || ''), body: String(body.body || ''), from: sender.name, createdAt: body.ts || nowIso(), updatedAt: nowIso() });
     await db.put('seen', { id: seenKey, t: nowIso() });
     await saveDevice({ ...sender, lastTransferAt: nowIso() });
     toast('saved', 'ok');
     location.hash = '#/notes';
   };
+}
+
+// ---------- privacy ----------
+
+async function permissionState(name) {
+  try {
+    if (!navigator.permissions || !navigator.permissions.query) return 'unknown';
+    const p = await navigator.permissions.query({ name });
+    return p.state;
+  } catch { return 'unknown'; }
+}
+
+async function viewPrivacy(el) {
+  const s = state.settings;
+  const ns = notificationSupport();
+  const perms = {
+    camera: await permissionState('camera'),
+    microphone: await permissionState('microphone'),
+    geolocation: await permissionState('geolocation'),
+    notifications: ns.permission,
+  };
+  const beaconHttp = (() => { try { const u = new URL((s.beaconUrl || '').replace(/^ws/i, 'http')); return `http://${u.hostname}:8080/`; } catch { return null; } })();
+  el.innerHTML = `
+    <section>
+      <h2>privacy</h2>
+      <div class="sub">what this console can reach, and what it is allowed to. everything defaults to off.</div>
+
+      <div class="card">
+        <h3>beacon</h3>
+        <p style="margin-top:.6rem">a beacon is a small relay someone runs on a laptop or a hotspot in the room. it carries rooms and call setup as ciphertext it cannot read. nothing connects until you say so here.</p>
+        <div class="field" style="margin-top:1rem"><label for="b-url">address</label><input id="b-url" type="text" value="${escapeHtml(s.beaconUrl)}" placeholder="wss://192.168.4.1:8443/ws" autocomplete="off" autocapitalize="off" spellcheck="false"></div>
+        <div class="field"><label for="b-pw">password (if the beacon has one)</label><input id="b-pw" type="password" value="${escapeHtml(s.beaconPassword)}" autocomplete="off"></div>
+        <div class="row"><button class="small" id="b-connect">${beacon.status === 'on' || beacon.status === 'connecting' ? 'disconnect' : 'connect'}</button><label class="row" style="margin:0;gap:.4rem"><input type="checkbox" id="b-auto" ${s.beaconAuto ? 'checked' : ''}> reconnect on unlock</label><span class="beaconchip ${beacon.status}" id="top-beacon"><i></i><span></span></span></div>
+        <p class="hint" style="color:var(--dim);margin-top:.8rem">${beaconHttp ? `first time on this beacon: install its certificate from <span class="mono">${escapeHtml(beaconHttp)}</span>, then come back.` : 'first time on a beacon: open its install page (http://its-address:8080/) to trust its certificate, then connect here.'} ${beacon.lastError ? `<br><span style="color:var(--danger)">${escapeHtml(beacon.lastError)}</span>` : ''}</p>
+      </div>
+
+      <div class="card" style="margin-top:1rem">
+        <h3>shield</h3>
+        <p style="margin-top:.6rem">on: messages blur until you press and hold one, the app veils itself whenever it is not in front, and shielded text cannot be selected or copied. a page cannot stop the operating system from taking a screenshot or recording the screen; this makes a capture worth less, not impossible.</p>
+        <div class="choice" style="margin-top:.8rem"><button class="small ${s.shield ? 'on' : ''}" data-shield="1">on</button><button class="small ${s.shield ? '' : 'on'}" data-shield="0">off</button></div>
+      </div>
+
+      <div class="card" style="margin-top:1rem">
+        <h3>notifications</h3>
+        <p style="margin-top:.6rem">a notification names who wrote, never what. it fires while the console is open in a tab or installed and running in the background; there is no push server, so a closed console cannot be woken.</p>
+        <div class="choice" style="margin-top:.8rem">${['off', 'sender', 'silent'].map((m) => `<button class="small ${s.notifications === m ? 'on' : ''}" data-notif="${m}">${{ off: 'none', sender: 'sender only', silent: 'a dot, no name' }[m]}</button>`).join('')}</div>
+        <p class="hint" style="color:var(--dim);margin-top:.6rem">permission: <span class="mono">${ns.permission}</span>${ns.supported && ns.permission !== 'granted' ? ' · <a href="#" id="notif-ask">ask the browser</a>' : ''}</p>
+      </div>
+
+      <div class="card" style="margin-top:1rem">
+        <h3>location and map</h3>
+        <p style="margin-top:.6rem">location is read only when you tap share inside a room, and goes sealed to that room. the radar needs no map. loading map tiles means asking a tile server for the area you are looking at, which tells that server roughly where you are.</p>
+        <div class="choice" style="margin-top:.8rem">${['none', 'beacon', 'osm'].map((m) => `<button class="small ${s.tiles === m ? 'on' : ''}" data-tiles="${m}">${{ none: 'no tiles (radar only)', beacon: 'tiles from the beacon', osm: 'openstreetmap.org (internet)' }[m]}</button>`).join('')}</div>
+      </div>
+
+      <div class="card" style="margin-top:1rem">
+        <h3>calls</h3>
+        <p style="margin-top:.6rem">calls go directly between phones on the local network. with no entries below, no outside server is ever contacted. if you also want calls across the internet, add stun or turn servers you trust, one per line.</p>
+        <div class="field" style="margin-top:.8rem"><label for="ice">ice servers (optional)</label><textarea id="ice" rows="2" placeholder="stun:stun.example.org:3478" spellcheck="false">${escapeHtml(s.iceServers)}</textarea></div>
+        <button class="small" id="ice-save">save</button>
+      </div>
+
+      <div class="card" style="margin-top:1rem">
+        <h3>permissions this browser has granted</h3>
+        <div style="margin-top:.6rem">
+          ${permRow('camera', 'used only while scanning a code or when you turn video on in a call', perms.camera)}
+          ${permRow('microphone', 'used only during a call you joined', perms.microphone)}
+          ${permRow('location', 'used only when you tap share in a room', perms.geolocation)}
+          ${permRow('notifications', 'sender name only', perms.notifications)}
+        </div>
+        <p class="hint" style="color:var(--dim);margin-top:.8rem">revoke any of these in the browser's site settings; the console keeps working without them.</p>
+      </div>
+
+      <div class="card" style="margin-top:1rem">
+        <h3>what leaves this device</h3>
+        <ul class="never" style="margin-top:.6rem">
+          <li>to the site that served the console: nothing after the first load; files come from the cache.</li>
+          <li>to a beacon you configured: sealed room messages, sealed pair messages, call setup inside sealed messages, and random daily tags. no names, no keys, no plaintext.</li>
+          <li>to other phones in a call: encrypted audio and video, directly.</li>
+          <li>to openstreetmap.org: tile requests for the visible map area, only if you enabled it above.</li>
+          <li>to anyone else: nothing. there is no analytics, no account, no telemetry.</li>
+        </ul>
+      </div>
+    </section>`;
+  paintBeaconChip();
+  $('#b-connect').onclick = async () => {
+    if (beacon.status === 'on' || beacon.status === 'connecting') { disconnectBeacon(); $('#b-connect').textContent = 'connect'; return; }
+    try {
+      const url = normalizeBeaconUrl($('#b-url').value);
+      s.beaconUrl = url; s.beaconPassword = $('#b-pw').value; s.beaconAuto = $('#b-auto').checked;
+      await saveSettings();
+      connectBeacon(url, s.beaconPassword);
+      $('#b-connect').textContent = 'disconnect';
+    } catch (e) { toast(e.message, 'error'); }
+  };
+  $('#b-auto').onchange = async () => { s.beaconAuto = $('#b-auto').checked; await saveSettings(); };
+  el.onclick = async (e) => {
+    const sh = e.target.closest('[data-shield]'); const nt = e.target.closest('[data-notif]'); const tl = e.target.closest('[data-tiles]');
+    if (sh) { s.shield = sh.dataset.shield === '1'; await saveSettings(); viewPrivacy(el); }
+    if (nt) { s.notifications = nt.dataset.notif; await saveSettings(); if (s.notifications !== 'off' && ns.permission === 'default') await requestNotifications(); viewPrivacy(el); }
+    if (tl) {
+      if (tl.dataset.tiles === 'osm' && s.tiles !== 'osm') {
+        const ok = await confirmDialog({ title: 'load tiles from openstreetmap.org', body: 'each map view sends the tile coordinates you look at to openstreetmap.org over the internet. that reveals the area, not your exact position, and only while you look. the beacon and rooms are unaffected.', okLabel: 'allow' });
+        if (!ok) return;
+      }
+      s.tiles = tl.dataset.tiles; await saveSettings(); viewPrivacy(el);
+    }
+  };
+  const ask = $('#notif-ask');
+  if (ask) ask.onclick = async (e) => { e.preventDefault(); await requestNotifications(); viewPrivacy(el); };
+  $('#ice-save').onclick = async () => {
+    const lines = $('#ice').value.split('\n').map((x) => x.trim()).filter(Boolean);
+    if (lines.some((l) => !/^(stun|stuns|turn|turns):/.test(l))) return toast('entries must start with stun: or turn:', 'error');
+    s.iceServers = lines.join('\n'); await saveSettings(); toast('saved', 'ok');
+  };
+}
+
+function permRow(k, why, v) {
+  return `<div class="perm"><div class="k">${k}<small>${why}</small></div><div class="v ${v === 'granted' ? 'on' : v === 'denied' ? 'off' : ''}">${v}</div></div>`;
 }
 
 // ---------- settings ----------
@@ -779,13 +1136,18 @@ function viewSettings(el) {
         </form>
       </div>
 
+      <div class="card" style="margin-top:1rem"><h3>install</h3>
+        <p style="margin-top:.6rem">${isStandalone() ? 'this copy is installed and runs in its own window.' : 'install from the web, no store. the installed copy is this page, cached, in its own window, working offline.'}</p>
+        ${isStandalone() ? '' : '<button class="small" id="st-install">install</button>'}
+      </div>
+
       <div class="card" style="margin-top:1rem"><h3>backup</h3>
         <p style="margin-top:.6rem">the export is the sealed vault as it sits on disk: useless without the passphrase. keep it on a memory card or another phone. importing replaces everything here.</p>
         <div class="row"><button class="small" id="st-export">export sealed backup</button><label class="small" style="margin:0"><input type="file" id="st-import" accept="application/json,.json" hidden><button class="small" type="button" id="st-import-btn">import backup</button></label></div>
       </div>
 
       <div class="card" style="margin-top:1rem;border-color:var(--danger-soft)"><h3>erase</h3>
-        <p style="margin-top:.6rem">deletes the profile, identity key, paired devices and notes from this device. the console itself stays installed.</p>
+        <p style="margin-top:.6rem">deletes the profile, identity keys, paired devices, rooms and notes from this device. the console itself stays installed.</p>
         <button class="danger small" id="st-wipe">erase everything</button>
       </div>
       <p class="locked-note">pairing key fingerprint <span class="mono">${state.identity.fingerprint}</span></p>
@@ -795,7 +1157,7 @@ function viewSettings(el) {
     const v = Math.max(0, Math.min(240, Number($('#st-lock').value) || 0));
     state.settings.autoLockMinutes = v;
     await saveSettings(); armIdleLock(); toast('saved', 'ok');
-    const meta = $('.sidenav .meta'); if (meta) meta.innerHTML = `unlocked ${relativeTime(state.unlockedAt)}<br>auto-lock ${v} min`;
+    renderShell(); route();
   };
 
   $('#st-pass').addEventListener('submit', async (e) => {
@@ -814,6 +1176,9 @@ function viewSettings(el) {
     } catch (err) { toast(`could not change passphrase: ${err.message}`, 'error'); }
   });
 
+  const ins = $('#st-install');
+  if (ins) ins.onclick = installFlow;
+
   $('#st-export').onclick = async () => {
     const dump = { format: 'gabriel-console-backup', version: 1, exportedAt: nowIso(), stores: {} };
     for (const s of db.STORES) dump.stores[s] = await db.all(s);
@@ -823,17 +1188,23 @@ function viewSettings(el) {
   $('#st-import').onchange = async (e) => {
     const f = e.target.files && e.target.files[0];
     if (!f) return;
+    if (f.size > 64 * 1024 * 1024) return toast('backup file is implausibly large', 'error');
     let dump;
     try { dump = JSON.parse(await f.text()); } catch { return toast('that file is not a backup', 'error'); }
     if (!dump || dump.format !== 'gabriel-console-backup' || dump.version !== 1 || !dump.stores || !Array.isArray(dump.stores.meta)) return toast('that file is not a backup', 'error');
     const profile = dump.stores.meta.find((r) => r && r.id === 'profile');
     const identity = dump.stores.meta.find((r) => r && r.id === 'identity');
-    if (!profile || !identity) return toast('backup is missing its profile', 'error');
+    if (!profile || !identity || typeof profile.name !== 'string' || !profile.kdf || !profile.wrap) return toast('backup is missing its profile', 'error');
     const ok = await confirmDialog({ title: 'replace this device\'s data', body: `everything here is replaced by the backup of <strong style="font-weight:400">${escapeHtml(profile.name)}</strong> exported ${relativeTime(dump.exportedAt)}. you will need that profile's passphrase to unlock it.`, okLabel: 'replace', danger: true, typeToConfirm: 'replace' });
     if (!ok) return;
     try {
       await db.clearAll();
-      for (const s of db.STORES) for (const r of dump.stores[s] || []) if (r && typeof r.id === 'string') await db.put(s, r);
+      for (const s of db.STORES) {
+        for (const r of dump.stores[s] || []) {
+          if (!r || typeof r !== 'object' || typeof r.id !== 'string') continue;
+          await db.put(s, r);
+        }
+      }
       await loadProfile();
       lock('backup imported; unlock with its passphrase');
     } catch (err) { toast(`import failed: ${err.message}`, 'error'); }
@@ -849,6 +1220,14 @@ async function main() {
     p.classList.toggle('on', !online);
     p.textContent = online ? 'online' : 'offline';
   });
+  installShield();
+  watchInstallPrompt();
+  on('install:available', () => { if (state.route === 'overview' && state.vaultKey) route(); });
+  if (navigator.serviceWorker) {
+    navigator.serviceWorker.addEventListener('message', (e) => {
+      if (e.data && e.data.type === 'navigate' && state.vaultKey && typeof e.data.route === 'string' && e.data.route.startsWith('#/')) location.hash = e.data.route;
+    });
+  }
   registerServiceWorker().then(async () => { state.readiness = await offlineReadiness(); if (state.route === 'overview' && state.vaultKey) route(); });
   await loadProfile();
   renderGate();

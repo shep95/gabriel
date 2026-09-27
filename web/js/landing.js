@@ -46,6 +46,14 @@ function paintReadiness(r) {
 
 async function main() {
   reveal();
+  // chromium fires this when the page qualifies for install; offer a button
+  window.addEventListener('beforeinstallprompt', (e) => {
+    e.preventDefault();
+    const b = $('#install-btn');
+    if (!b) return;
+    b.hidden = false;
+    b.onclick = async () => { e.prompt(); const { outcome } = await e.userChoice; if (outcome === 'accepted') b.hidden = true; };
+  });
   watchOnline((online) => setPill($('#pill-net'), online ? 'off' : 'on', online ? 'network: connected' : 'network: off, still working'));
 
   const reg = await registerServiceWorker();

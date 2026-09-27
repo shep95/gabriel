@@ -3,8 +3,8 @@
 // this module never sees plaintext and never does anything clever.
 
 const DB_NAME = 'gabriel';
-const DB_VERSION = 1;
-export const STORES = ['meta', 'devices', 'notes', 'seen'];
+const DB_VERSION = 2;
+export const STORES = ['meta', 'devices', 'notes', 'seen', 'rooms', 'messages'];
 
 let dbPromise = null;
 
@@ -17,6 +17,10 @@ export function openDb() {
       for (const name of STORES) {
         if (!db.objectStoreNames.contains(name)) db.createObjectStore(name, { keyPath: 'id' });
       }
+      // messages are looked up per room; the room id is a local random value
+      const tx = req.transaction;
+      const messages = tx.objectStore('messages');
+      if (!messages.indexNames.contains('room')) messages.createIndex('room', 'roomId', { unique: false });
     };
     req.onsuccess = () => {
       const db = req.result;
@@ -61,6 +65,11 @@ export async function del(store, id) {
 export async function all(store) {
   const db = await openDb();
   return tx(db, store, 'readonly', (s) => s.getAll());
+}
+
+export async function byIndex(store, index, value) {
+  const db = await openDb();
+  return tx(db, store, 'readonly', (s) => s.index(index).getAll(value));
 }
 
 export async function count(store) {

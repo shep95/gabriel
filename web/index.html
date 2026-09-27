@@ -3,12 +3,49 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-  <title>gabriel console</title>
-  <meta name="description" content="an offline console for the gabriel mesh: local sign-in, encrypted notes, device pairing by code. no account, no server, no internet needed.">
-  <meta name="theme-color" content="#07090c">
-  <meta name="color-scheme" content="dark light">
-  <meta name="referrer" content="no-referrer">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' data: blob:; media-src 'self' blob:; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self'; worker-src 'self'; manifest-src 'self'; base-uri 'none'; form-action 'none'; object-src 'none'">
+  <title>gabriel console: offline messaging, rooms and calls with no account</title>
+  <meta name="description" content="gabriel console is an offline-first messenger companion. local sign-in with a passphrase, end-to-end encrypted rooms and calls over a local beacon with no internet, device pairing by code, shielded messages, opt-in location. installs from the web on phones, tablets and laptops.">
+  <meta name="keywords" content="offline messenger, no internet chat, end-to-end encrypted group chat, local network calls, mesh companion, pwa messenger, no account messaging, disaster communication, bitchat">
+  <meta name="robots" content="index, follow, max-image-preview:large">
+  <meta name="author" content="gabriel">
+  <meta name="application-name" content="gabriel console">
+  <meta property="og:type" content="website">
+  <meta property="og:site_name" content="gabriel console">
+  <meta property="og:title" content="gabriel console: offline messaging, rooms and calls with no account">
+  <meta property="og:description" content="local sign-in, encrypted rooms and calls over a local beacon, device pairing by code, shielded messages. no account, no server, no internet needed.">
+  <meta property="og:image" content="./icons/og.png">
+  <meta property="og:image:width" content="1200">
+  <meta property="og:image:height" content="630">
+  <meta property="og:image:alt" content="concentric signal rings on a dark field">
+  <meta property="og:locale" content="en">
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="gabriel console: offline messaging, rooms and calls with no account">
+  <meta name="twitter:description" content="local sign-in, encrypted rooms and calls over a local beacon, device pairing by code, shielded messages. no account, no server, no internet needed.">
+  <meta name="twitter:image" content="./icons/og.png">
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "SoftwareApplication",
+    "name": "gabriel console",
+    "applicationCategory": "CommunicationApplication",
+    "operatingSystem": "any browser: iOS, Android, macOS, Windows, Linux",
+    "url": "./",
+    "description": "offline-first messenger companion: local sign-in, end-to-end encrypted rooms and calls over a local beacon with no internet, device pairing by code, shielded messages, opt-in location sharing.",
+    "offers": { "@type": "Offer", "price": "0", "priceCurrency": "USD" },
+    "license": "https://unlicense.org/",
+    "featureList": [
+      "sign-in with a passphrase, no account",
+      "end-to-end encrypted group rooms over a local beacon",
+      "peer-to-peer group calls on the local network",
+      "device pairing by qr or typed code with six-digit verification",
+      "shielded messages: hold to reveal, veiled when hidden",
+      "notifications that name the sender and never the message",
+      "opt-in location sharing with radar and optional map",
+      "installable from the web on phones, tablets and laptops",
+      "works with the network off"
+    ]
+  }
+  </script>
   <link rel="manifest" href="./manifest.webmanifest">
   <link rel="icon" href="./icons/icon.svg" type="image/svg+xml">
   <link rel="apple-touch-icon" href="./icons/icon-192.png">
@@ -24,8 +61,11 @@
       <nav aria-label="page">
         <a href="#signin">sign-in</a>
         <a href="#pair">pairing</a>
+        <a href="#rooms">rooms &amp; calls</a>
+        <a href="#shield">shield</a>
         <a href="#offline">offline</a>
-        <a href="#never">what it never does</a>
+        <a href="#install">install</a>
+        <a href="#never">boundaries</a>
         <a class="enter" href="./app.html">enter</a>
       </nav>
     </div>
@@ -38,9 +78,9 @@
       </div>
       <div class="wrap">
         <div class="eyebrow reveal" style="--i:0">runs on this device. nowhere else.</div>
-        <h1 id="hero-title" class="reveal" style="--i:1">a place to keep what the mesh cannot carry, <em>with the network off.</em></h1>
+        <h1 id="hero-title" class="reveal" style="--i:1">messaging, rooms and calls that keep working <em>when the network is gone.</em></h1>
         <p class="lede reveal" style="--i:2">
-          gabriel console is the quiet side of a bluetooth mesh messenger. it holds your notes, your paired devices and your identity behind one passphrase, on this device only. there is no account to create, no server to trust, and nothing here asks for the internet after it has loaded once.
+          gabriel console is a messenger companion that lives on your device. sign in with a passphrase and nothing else. pair devices by code. talk in end-to-end encrypted rooms and calls carried by a small beacon on the local wi-fi, with no internet at all. install it from this page on a phone, tablet or laptop; no store, no account, no server holding your words.
         </p>
         <div class="actions reveal" style="--i:3">
           <a class="enter" href="./app.html"><button class="primary" type="button">open the console</button></a>
@@ -95,10 +135,67 @@
       </div>
     </section>
 
+    <section class="block" id="rooms" aria-labelledby="rooms-title">
+      <div class="wrap">
+        <div>
+          <div class="eyebrow reveal">03 · rooms and calls</div>
+          <h2 id="rooms-title" class="reveal" style="--i:1">a room is people you have met, carried by a box in the corner.</h2>
+        </div>
+        <div class="stack">
+          <p class="reveal" style="--i:1">phones cannot talk to each other through a browser without something in between. gabriel's something is a <strong style="font-weight:400;color:var(--text)">beacon</strong>: a small program anyone runs on a laptop or a spare phone plugged into a wall, on a wi-fi hotspot that has no uplink. it forwards sealed messages by random tags. it cannot read them, it cannot tell who is who, and it keeps nothing on disk.</p>
+          <ol class="steps reveal" style="--i:2">
+            <li><strong>found a room</strong><p>name it. you are its first member and the only one who can add people or rotate its key.</p></li>
+            <li><strong>add people you have paired with</strong><p>membership is pairing: nobody enters a room unless the founder has verified their device in person. the room key travels to them sealed under that pairing.</p></li>
+            <li><strong>talk</strong><p>every message is encrypted under the room's current key and signed by its sender. remove someone and the key changes; the beacon tag changes with it, so they cannot even watch the traffic.</p></li>
+            <li><strong>call</strong><p>audio, and video if you want it, goes straight between phones on the local network, encrypted; the beacon only carries the sealed handshake. up to eight in a call.</p></li>
+          </ol>
+          <div class="facts reveal" style="--i:3">
+            <div class="fact"><div class="k">message seal</div><div class="v mono">aes-256-gcm · epoch key · ecdsa p-256 signature</div></div>
+            <div class="fact"><div class="k">what the beacon sees</div><div class="v">random 64-character tags that change daily, ciphertext, and how many devices are listening to each tag.</div></div>
+            <div class="fact"><div class="k">what it never sees</div><div class="v">names, keys, plaintext, who is in which room.</div></div>
+            <div class="fact"><div class="k">running one</div><div class="v">node, one command, a certificate you install once. see <span class="mono">beacon/README.md</span> in the source.</div></div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="block" id="shield" aria-labelledby="shield-title">
+      <div class="wrap">
+        <div>
+          <div class="eyebrow reveal">04 · shield</div>
+          <h2 id="shield-title" class="reveal" style="--i:1">a screenshot should be worth as little as possible.</h2>
+        </div>
+        <div class="stack">
+          <p class="reveal" style="--i:1">no web page can stop a phone from capturing its own screen; anyone who tells you otherwise is selling something. what the console does instead is limit what a capture is worth.</p>
+          <ul class="never reveal" style="--i:2">
+            <li>messages are blurred until you press and hold one. a screenshot shows one message, never a conversation.</li>
+            <li>the moment the console is not in front, it veils itself. app switchers and recording overlays get a blank card.</li>
+            <li>shielded text cannot be selected, copied or dragged.</li>
+            <li>notifications name the sender and nothing else, or show only that something arrived, or nothing at all. your choice; sender-only is the default.</li>
+            <li>in the native mesh app on iphone, the screen goes blank for as long as a recording or mirroring is active.</li>
+          </ul>
+          <p class="reveal" style="--i:3">the setting that turns this on is named plainly, and says exactly this.</p>
+        </div>
+      </div>
+    </section>
+
+    <section class="block" id="where" aria-labelledby="where-title">
+      <div class="wrap">
+        <div>
+          <div class="eyebrow reveal">05 · location, only when you say</div>
+          <h2 id="where-title" class="reveal" style="--i:1">find each other without a map server.</h2>
+        </div>
+        <div class="stack">
+          <p class="reveal" style="--i:1">the console never reads your position on its own. inside a room you can share where you are once, or live every twenty seconds until you stop. it goes sealed to that room and nowhere else.</p>
+          <p class="reveal" style="--i:2">whoever receives it gets distance, bearing and a compass arrow that turns with the phone. that works with no map, no tiles and no internet. if a beacon carries a map of the area, or if you explicitly allow openstreetmap.org, a real map appears too. either way there is no account and no tracking.</p>
+        </div>
+      </div>
+    </section>
+
     <section class="block" id="offline" aria-labelledby="offline-title">
       <div class="wrap">
         <div>
-          <div class="eyebrow reveal">03 · offline</div>
+          <div class="eyebrow reveal">06 · offline</div>
           <h2 id="offline-title" class="reveal" style="--i:1">loaded once, it stays.</h2>
         </div>
         <div class="stack">
@@ -116,15 +213,33 @@
       </div>
     </section>
 
+    <section class="block" id="install" aria-labelledby="install-title">
+      <div class="wrap">
+        <div>
+          <div class="eyebrow reveal">07 · install</div>
+          <h2 id="install-title" class="reveal" style="--i:1">from this page, on anything with a browser.</h2>
+        </div>
+        <div class="stack">
+          <p class="reveal" style="--i:1">no app store, no account, no download from somewhere else. the installed console is this page, cached, in its own window.</p>
+          <div class="facts reveal" style="--i:2">
+            <div class="fact"><div class="k">iphone, ipad</div><div class="v">safari → share → add to home screen.</div></div>
+            <div class="fact"><div class="k">android</div><div class="v">chrome or edge → menu → install app.</div></div>
+            <div class="fact"><div class="k">mac, windows, linux</div><div class="v">chrome, edge or brave → the install icon in the address bar. safari on mac: file → add to dock.</div></div>
+          </div>
+          <div class="actions reveal" style="--i:3"><a href="./app.html"><button class="primary" type="button">open the console</button></a><button class="ghost" type="button" id="install-btn" hidden>install now</button></div>
+        </div>
+      </div>
+    </section>
+
     <section class="block" id="never" aria-labelledby="never-title">
       <div class="wrap">
         <div>
-          <div class="eyebrow reveal">04 · boundaries</div>
+          <div class="eyebrow reveal">08 · boundaries</div>
           <h2 id="never-title" class="reveal" style="--i:1">what it never does.</h2>
         </div>
         <div class="stack">
           <ul class="never reveal" style="--i:1">
-            <li>make a network request after the first load. the worker refuses anything that is not this site.</li>
+            <li>make a network request after the first load, except to a beacon you configured yourself and, only if you switch it on, openstreetmap.org for map tiles. the worker refuses everything else.</li>
             <li>create an account, ask for an email, a phone number or a name that has to be real.</li>
             <li>send a passphrase, a key, a note or a device list anywhere. there is no anywhere.</li>
             <li>run analytics, load fonts or scripts from other domains, or set third-party cookies.</li>
