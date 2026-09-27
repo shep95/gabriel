@@ -281,13 +281,16 @@ async function main() {
       console.error('add button not clickable:', JSON.stringify(why));
       throw e;
     }
-    await A.page.waitForFunction(() => document.querySelector('#toast')?.textContent.includes('added'));
-    // b learns about the room over its pair inbox
-    await B.page.waitForFunction(() => document.querySelector('#toast')?.textContent.includes('added to north stairwell'), null, { timeout: 15000 });
+    await A.page.waitForFunction(() => document.querySelector('#toast')?.textContent.includes('invited'));
+    // b receives an invitation over its pair inbox and must say yes before anything is read
+    await B.page.waitForFunction(() => document.querySelector('#toast')?.textContent.includes('invited you to north stairwell'), null, { timeout: 15000 });
     await B.page.click('a[data-route="rooms"]');
-    await B.page.waitForSelector('.item-row');
-    await B.page.click('.item-row a');
-    await B.page.waitForSelector('#timeline');
+    await B.page.waitForSelector('[data-join]');
+    assert(await B.page.$('#room-list .item-row') === null, 'an invitation is not a room yet');
+    await B.page.click('[data-join]');
+    await B.page.waitForSelector('#timeline', { timeout: 10000 });
+    // the founder sees the acknowledgement
+    await A.page.waitForFunction(() => document.querySelector('#timeline')?.textContent.includes('bao joined'), null, { timeout: 15000 });
 
     await A.page.fill('#compose', 'water at the second landing');
     await A.page.click('#send');
@@ -438,6 +441,85 @@ async function main() {
     await A.page.waitForSelector('#compose');
     log('on-page keyboard: unlocked with a shuffled keypad, layout differs each time');
 
+    // ---- access, consent and stewardship, three devices ----
+    // c pairs with b (in person); c connects; b proposes c; a approves; c gets an invitation and joins
+    await C.page.click('a[data-route="devices"]'); await C.page.click('#pair-btn'); await C.page.waitForSelector('#my-code');
+    const codeC = await C.page.$eval('#my-code', (el) => el.textContent);
+    await B.page.click('a[data-route="devices"]'); await B.page.click('#pair-btn'); await B.page.waitForSelector('#my-code');
+    const codeB2 = await B.page.$eval('#my-code', (el) => el.textContent);
+    await C.page.fill('#their-text', codeB2); await C.page.click('#read-theirs'); await C.page.waitForSelector('#sas');
+    await B.page.fill('#their-text', codeC); await B.page.click('#read-theirs'); await B.page.waitForSelector('#sas');
+    await C.page.click('#sas-yes'); await B.page.click('#sas-yes');
+    await C.page.waitForSelector('#compose'); await B.page.waitForSelector('#compose');
+    await C.page.click('a[data-route="privacy"]'); await C.page.fill('#b-url', `ws://127.0.0.1:${PORT}/ws`); await C.page.click('#b-connect');
+    await C.page.waitForFunction(() => document.querySelector('#top-beacon')?.classList.contains('on'), null, { timeout: 10000 });
+    await B.page.click('a[data-route="rooms"]'); await B.page.click('#room-list .item-row a[href^="#/rooms/"] button'); await B.page.waitForSelector('#room-people');
+    await B.page.click('#room-people'); await B.page.waitForSelector('[data-propose]');
+    await B.page.click('[data-propose]');
+    await B.page.waitForFunction(() => document.querySelector('#toast')?.textContent.includes('proposed'), null, { timeout: 10000 });
+    // the founder sees the proposal wherever they are, and approves from the rooms page
+    await A.page.waitForFunction(() => document.querySelector('#toast')?.textContent.includes('proposed someone'), null, { timeout: 15000 });
+    await A.page.click('a[data-route="rooms"]'); await A.page.waitForSelector('[data-approve]');
+    const badgeBefore = await A.page.$eval('.sidenav a[data-route="rooms"] .badge', (b) => b.textContent).catch(() => null);
+    assert(badgeBefore !== null, 'the rooms entry shows what waits for the founder');
+    await A.page.click('[data-approve]');
+    await A.page.waitForFunction(() => document.querySelector('#toast')?.textContent.includes('added'), null, { timeout: 15000 });
+    // c was introduced to a by b, then invited by a over that introduced channel
+    await C.page.waitForFunction(() => document.querySelector('#toast')?.textContent.includes('invited you to north stairwell'), null, { timeout: 20000 });
+    await C.page.click('a[data-route="rooms"]'); await C.page.waitForSelector('[data-join]'); await C.page.click('[data-join]');
+    await C.page.waitForSelector('#compose', { timeout: 10000 });
+    await C.page.fill('#compose', 'third voice here'); await C.page.click('#send');
+    await A.page.click('a[data-route="rooms"]'); await A.page.click('#room-list .item-row a[href^="#/rooms/"] button'); await A.page.waitForSelector('#timeline');
+    await A.page.waitForFunction(() => document.querySelector('#timeline')?.textContent.includes('third voice here'), null, { timeout: 15000 });
+    await B.page.click('a[data-route="rooms"]'); await B.page.click('#room-list .item-row a[href^="#/rooms/"] button'); await B.page.waitForSelector('#timeline');
+    await B.page.waitForFunction(() => document.querySelector('#timeline')?.textContent.includes('third voice here'), null, { timeout: 15000 });
+    await C.page.click('a[data-route="devices"]');
+    await C.page.waitForSelector('#dev-list .item-row');
+    const cRows = await C.page.$$eval('#dev-list .item-row', (rows) => rows.map((r) => r.textContent.replace(/\s+/g, ' ').trim()));
+    assert(cRows.some((t) => t.includes('ada') && t.includes('introduced by bao')), `c holds an unverified, introduced channel to the founder (rows: ${JSON.stringify(cRows)})`);
+    log('access: b proposed c, the founder approved, c was introduced, invited, joined and heard by everyone');
+
+    // message request: both sides drop the introduced channel, so neither can reach the other.
+    // c asks a through the room; a is asked and accepts; both derive a key from the roster.
+    const nameC = await C.page.$eval('#who', (e) => e.textContent.trim());
+    await C.page.click('#dev-list .item-row:has-text("ada") [data-act="forget"]'); await C.page.waitForSelector('#overlay-box #c-ok'); await C.page.click('#overlay-box #c-ok');
+    await C.page.waitForFunction(() => document.querySelector('#toast')?.textContent.includes('forgotten'), null, { timeout: 5000 });
+    await A.page.click('a[data-route="devices"]'); await A.page.waitForSelector('#dev-list .item-row');
+    await A.page.click(`#dev-list .item-row:has-text("${nameC}") [data-act="forget"]`); await A.page.waitForSelector('#overlay-box #c-ok'); await A.page.click('#overlay-box #c-ok');
+    await A.page.waitForFunction(() => document.querySelector('#toast')?.textContent.includes('forgotten'), null, { timeout: 5000 });
+    await C.page.click('a[data-route="rooms"]'); await C.page.click('#room-list .item-row a[href^="#/rooms/"] button'); await C.page.waitForSelector('#room-people');
+    await C.page.click('#room-people'); await C.page.waitForSelector('[data-dm-request]'); await C.page.click('[data-dm-request]');
+    await C.page.waitForFunction(() => document.querySelector('#toast')?.textContent.includes('asked'), null, { timeout: 10000 });
+    await A.page.waitForFunction(() => document.querySelector('#toast')?.textContent.includes('asks to message you'), null, { timeout: 15000 });
+    await A.page.click('a[data-route="rooms"]'); await A.page.waitForSelector('[data-dm-accept]'); await A.page.click('[data-dm-accept]');
+    await A.page.waitForSelector('#compose', { timeout: 10000 });
+    await C.page.waitForFunction(() => document.querySelector('#toast')?.textContent.includes('accepted'), null, { timeout: 15000 });
+    await A.page.fill('#compose', 'one to one, via the room'); await A.page.click('#send');
+    await C.page.click('a[data-route="rooms"]'); await C.page.waitForFunction(() => [...document.querySelectorAll('.item-row .name')].some((n) => n.textContent.includes('ada')), null, { timeout: 10000 });
+    await C.page.click('.item-row:has-text("ada") a[href^="#/rooms/dm:"] button');
+    await C.page.waitForFunction(() => document.querySelector('#timeline')?.textContent.includes('one to one, via the room'), null, { timeout: 15000 });
+    // and the other way: a side that still holds a channel answers a request at once
+    await C.page.click('a[data-route="devices"]'); await C.page.waitForSelector('#dev-list .item-row');
+    await C.page.click('#dev-list .item-row:has-text("ada") [data-act="forget"]'); await C.page.waitForSelector('#overlay-box #c-ok'); await C.page.click('#overlay-box #c-ok');
+    await C.page.click('a[data-route="rooms"]'); await C.page.click('#room-list .item-row a[href^="#/rooms/"] button'); await C.page.waitForSelector('#room-people');
+    await C.page.click('#room-people'); await C.page.waitForSelector('[data-dm-request]'); await C.page.click('[data-dm-request]');
+    await C.page.waitForFunction(() => document.querySelector('#toast')?.textContent.includes('accepted'), null, { timeout: 15000 });
+    log('message request: asked through the room, accepted, a direct chat on a derived key; a side that still held the channel answered at once');
+
+    // unread: b leaves the room view, a sends, b sees a count, opening clears it
+    await B.page.click('a[data-route="notes"]');
+    await A.page.click('a[data-route="rooms"]'); await A.page.click('#room-list .item-row a[href^="#/rooms/"] button'); await A.page.waitForSelector('#compose');
+    await A.page.fill('#compose', 'counting this one'); await A.page.click('#send');
+    await B.page.waitForFunction(() => document.querySelector('.sidenav a[data-route="rooms"] .badge')?.textContent === '1', null, { timeout: 15000 });
+    await B.page.click('a[data-route="rooms"]');
+    await B.page.waitForSelector('#room-list .item-row');
+    const rowsB = await B.page.$$eval('main.content .item-row', (rows) => rows.map((r) => r.innerText.replace(/\s+/g, ' ').trim()));
+    const rowBadge = await B.page.$eval('#room-list .item-row .badge', (b) => b.textContent).catch(() => null);
+    assert(rowBadge === '1', `the room row carries the unread count (badge ${rowBadge}; rows: ${JSON.stringify(rowsB)})`);
+    await B.page.click('#room-list .item-row a[href^="#/rooms/"] button'); await B.page.waitForSelector('#compose');
+    await B.page.waitForFunction(() => !document.querySelector('.sidenav a[data-route="rooms"] .badge'), null, { timeout: 5000 });
+    log('unread: counted while away, cleared on opening');
+
     // back to the room for the rotation check
     await A.page.click('a[data-route="rooms"]');
     await A.page.click('.item-row a[href^="#/rooms/"]:not([href*="dm:"])');
@@ -457,6 +539,24 @@ async function main() {
     const leaked = await B.page.$eval('#timeline', (el) => el.textContent.includes('after rotation'));
     assert(!leaked, 'a removed member does not receive messages sealed under the new key');
     log('removal: key rotated, removed member sees nothing new');
+
+    // stewardship: a hands the room to c; c rotates; a still reads; c dissolves and a sees it end
+    await A.page.click('#room-people'); await A.page.waitForSelector('[data-handover]'); await A.page.click('[data-handover]');
+    await A.page.waitForSelector('#overlay-box #c-ok'); await A.page.click('#overlay-box #c-ok');
+    await A.page.waitForFunction(() => document.querySelector('#toast')?.textContent.includes('is the founder now'), null, { timeout: 15000 });
+    await C.page.waitForFunction(() => document.querySelector('#toast')?.textContent.includes('you are the founder'), null, { timeout: 15000 });
+    await C.page.click('a[data-route="rooms"]'); await C.page.click('#room-list .item-row a[href^="#/rooms/"] button'); await C.page.waitForSelector('#room-people');
+    await C.page.click('#room-people'); await C.page.waitForSelector('#pp-rotate'); await C.page.click('#pp-rotate');
+    await C.page.waitForFunction(() => document.querySelector('#toast')?.textContent.includes('rotated'), null, { timeout: 15000 });
+    await A.page.waitForFunction(() => document.querySelector('#timeline')?.textContent.includes('key was rotated'), null, { timeout: 15000 });
+    await C.page.fill('#compose', 'new founder, new key'); await C.page.click('#send');
+    await A.page.waitForFunction(() => document.querySelector('#timeline')?.textContent.includes('new founder, new key'), null, { timeout: 15000 });
+    await C.page.click('#room-people'); await C.page.waitForSelector('#pp-leave'); await C.page.click('#pp-leave');
+    await C.page.waitForSelector('#lf-dissolve'); await C.page.click('#lf-dissolve');
+    await C.page.waitForSelector('#overlay-box #confirm-input'); await C.page.fill('#overlay-box #confirm-input', 'dissolve'); await C.page.click('#overlay-box #c-ok');
+    await C.page.waitForFunction(() => document.querySelector('#toast')?.textContent.includes('dissolved'), null, { timeout: 15000 });
+    await A.page.waitForFunction(() => document.querySelector('#timeline')?.textContent.includes('dissolved the room'), null, { timeout: 15000 });
+    log('stewardship: founder handed over, heir rotated the key, then dissolved; every member saw it');
 
     // the beacon is on-origin here (same loopback origin), so the off-origin check below still holds
     assert(offOrigin.length === 0, `no off-origin requests (saw ${offOrigin.join(', ')})`);

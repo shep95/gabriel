@@ -21,7 +21,17 @@ in its loopback dev mode (`node beacon/server.mjs --dev-http`), which serves
 - sends a photo (re-encoded, bounded, shielded on arrival), a 700 kb file in
   nine sealed parts (checked byte for byte by hash) and a recorded voice clip
 - locks and unlocks with the on-page keyboard, and checks the layout shuffles
+- proves an invitation waits for consent: the invitee joins, the founder sees it
+- pairs a third device with a member, has the member propose it, the founder
+  approve it, the newcomer receive an introduction and an invitation, join,
+  and be heard by everyone
+- drops the channel between two members on both sides, asks to message
+  through the room, accepts, and proves a direct chat works on the derived key;
+  then proves a side that still holds a channel answers a request at once
+- counts unread while a member is away and clears it on opening
 - removes a member, rotates the key, and proves the removed member sees nothing new
+- hands the room to the third device, has it rotate the key and then dissolve
+  the room, and proves every member saw each step
 - asserts that no request ever left the origin
 
 ```

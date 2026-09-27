@@ -10,7 +10,7 @@ import { b64url, uuid, nowIso, cleanName } from './util.js';
 import {
   inboxTag, dayString, newRoomKey, newRoomId, roomTag, sealRoomMessage, openRoomMessage,
   sealMessage, parseEnvelopeHeader, openMessage, sealRecord, openRecord,
-  sealDirectFrame, openDirectFrame, isDirectFrame,
+  sealDirectFrame, openDirectFrame, isDirectFrame, deriveIntroPair,
 } from './crypto.js';
 import * as db from './db.js';
 import { state, emit, on } from './state.js';
@@ -122,7 +122,7 @@ export async function refreshSubscriptions() {
   if (!state.vaultKey || !state.identity) return;
   const wanted = [];
   for (const room of state.rooms) {
-    if (room.left) continue;
+    if (room.left || room.pending) continue;
     try {
       const tag = await roomTag(currentKey(room));
       const old = tagsByRoom.get(room.id);
@@ -184,11 +184,39 @@ export async function sendDirectMessage(dev, kind, body, { keep = true } = {}) {
   return msg;
 }
 
-async function touchDevice(dev) {
-  const { id, ...plain } = { ...dev, lastTransferAt: nowIso() };
+export async function upsertDevice(dev) {
+  const { id, ...plain } = dev;
   await db.put('devices', { id, enc: await sealRecord(state.vaultKey, 'devices', id, plain) });
   const i = state.devices.findIndex((d) => d.id === id);
-  if (i >= 0) state.devices[i] = { id, ...plain };
+  if (i >= 0) state.devices[i] = dev; else state.devices.unshift(dev);
+  return dev;
+}
+async function touchDevice(dev) {
+  await upsertDevice({ ...dev, lastTransferAt: nowIso() });
+}
+
+// a device record made from an introduction: the key comes from our identity
+// key and theirs, vouched for by `via`. verified stays false until the two
+// devices compare digits in person, which replaces the key with a paired one.
+const MEMBER_SHAPE = (m) => m && typeof m === 'object' && FP.test(String(m.fp)) && isKey33(m.pub) && isKey33(m.signPub);
+export async function deviceFromIntro(peer, via) {
+  if (!MEMBER_SHAPE(peer)) throw new Error('malformed introduction');
+  if (peer.fp === state.identity.fingerprint) throw new Error('that is this device');
+  const existing = state.devices.find((d) => d.fingerprint === peer.fp);
+  if (existing && isKey32(existing.pairKey)) return existing;
+  const pairKey = await deriveIntroPair(state.identity.privateKey, state.identity.fingerprint, b64url.decode(peer.pub), peer.fp);
+  const dev = {
+    id: existing ? existing.id : uuid(),
+    name: cleanName(peer.name) || peer.fp.slice(0, 8),
+    pub: peer.pub, signPub: peer.signPub, fingerprint: peer.fp,
+    pairKey: b64url.encode(pairKey),
+    verified: false, via: cleanName(via, 40) || 'an introduction',
+    pairedAt: nowIso(), lastTransferAt: existing ? existing.lastTransferAt : null,
+  };
+  await upsertDevice(dev);
+  await refreshSubscriptions();
+  emit('devices:changed', { deviceId: dev.id, reason: 'introduced' });
+  return dev;
 }
 
 async function handleDirect(dev, text) {
@@ -217,12 +245,18 @@ async function handleDirect(dev, text) {
       if (!msg) return;
       await storeMessage(dmId(dev), msg);
       await touchDevice(dev);
+      await noteUnread(dmId(dev));
       return emit('room:message', { roomId: dmId(dev), msg, mine: false, replay: false, sender });
     }
     case 'call':
       return emit('room:call', { roomId: dmId(dev), msg: { ...body, fp: dev.fingerprint }, sender });
     case 'media':
-      return acceptMediaPart(dmId(dev), body, dev.fingerprint, { sender, replay: false, afterStore: () => touchDevice(dev) });
+      return acceptMediaPart(dmId(dev), body, dev.fingerprint, { sender, replay: false, afterStore: async () => { await touchDevice(dev); await noteUnread(dmId(dev)); } });
+    case 'intro': {
+      // a paired device vouches for a third: we get its keys and can be reached by it
+      try { await deviceFromIntro(body.peer, dev.name); } catch { return undefined; }
+      return emit('devices:changed', { reason: 'intro', from: dev, peerFp: body.peer.fp, roomName: typeof body.roomName === 'string' ? cleanName(body.roomName, 60) : null });
+    }
     default:
       return undefined;
   }
@@ -341,6 +375,7 @@ export async function createRoom(name) {
     epoch: 1,
     keys: { 1: b64url.encode(key) },
     members: [me()],
+    joined: { [state.identity.fingerprint]: nowIso() },
     rosterAt: nowIso(),
     createdAt: nowIso(),
     updatedAt: nowIso(),
@@ -379,6 +414,7 @@ async function acceptInvite(fromDev, r) {
   // paired device cannot re-found it under its own key and roster
   if (existing && existing.founderFp !== r.founderFp) return;
   if (existing && epoch < existing.epoch) return;
+  const fresh = !existing || existing.left;
   const room = existing || { id: r.id, createdAt: nowIso(), keys: {}, rosterAt: '' };
   room.name = cleanName(r.name, 60) || 'room';
   room.founderFp = r.founderFp;
@@ -389,9 +425,162 @@ async function acceptInvite(fromDev, r) {
   room.rosterAt = typeof r.rosterAt === 'string' ? r.rosterAt : nowIso();
   room.updatedAt = nowIso();
   room.left = false;
+  // a room you have not joined before waits for your yes; a room you are
+  // already in just takes the refreshed key and roster
+  if (fresh) { room.pending = true; room.invitedBy = { fp: fromDev.fingerprint, name: fromDev.name }; }
   await saveRoom(room);
   await refreshSubscriptions();
-  emit('rooms:changed', { roomId: room.id, reason: existing ? 'rejoined' : 'invited' });
+  emit('rooms:changed', { roomId: room.id, reason: fresh ? 'invitation' : 'rejoined', who: { fp: fromDev.fingerprint, name: fromDev.name } });
+}
+
+export async function joinRoom(room) {
+  if (!room.pending) return room;
+  room.pending = false;
+  room.updatedAt = nowIso();
+  await saveRoom(room);
+  await refreshSubscriptions();
+  try { await sendRoomMessage(room, 'joined', {}, { keep: true }); } catch { /* the founder learns it when we next speak */ }
+  emit('rooms:changed', { roomId: room.id, reason: 'invited' });
+  return room;
+}
+
+export async function declineInvite(room) {
+  // tell the room so the founder rotates the key we were handed
+  try { room.pending = false; await refreshSubscriptions(); await sendRoomMessage(room, 'leave', {}, { keep: true }); } catch { /* offline: the key we hold dies with the record */ }
+  await deleteRoom(room.id);
+  emit('rooms:changed', { roomId: room.id, reason: 'declined' });
+}
+
+// the founder sends the current invitation again, for a device that never answered
+export async function resendInvite(room, fp) {
+  if (room.founderFp !== state.identity.fingerprint) throw new Error('only the founder can invite');
+  const dev = state.devices.find((d) => d.fingerprint === fp);
+  if (!dev) throw new Error('no channel to that device');
+  await sendDirect(dev, { kind: 'room-invite', room: { id: room.id, name: room.name, founderFp: room.founderFp, epoch: room.epoch, key: room.keys[String(room.epoch)], members: room.members, rosterAt: room.rosterAt } });
+}
+
+// ---------- proposals: any member may propose a paired device; the founder decides ----------
+
+export async function proposeMember(room, dev) {
+  if (room.pending || room.left) throw new Error('join the room first');
+  if (!dev.signPub) throw new Error(`${dev.name} paired with an older code and cannot sign messages; pair again`);
+  if (room.members.some((m) => m.fp === dev.fingerprint)) throw new Error(`${dev.name} is already a member`);
+  const founder = room.members.find((m) => m.fp === room.founderFp);
+  if (!founder) throw new Error('the room has no founder on its roster');
+  if (room.founderFp === state.identity.fingerprint) throw new Error('you are the founder: add them directly');
+  // the newcomer learns the founder's keys from us, so the founder's invitation can reach them
+  await sendDirect(dev, { kind: 'intro', peer: { fp: founder.fp, name: founder.name, pub: founder.pub, signPub: founder.signPub }, roomName: room.name });
+  await sendRoomMessage(room, 'propose', { dev: { fp: dev.fingerprint, name: dev.name, pub: dev.pub, signPub: dev.signPub } });
+}
+
+export async function approveProposal(room, fp) {
+  if (room.founderFp !== state.identity.fingerprint) throw new Error('only the founder can approve');
+  const p = (room.proposals || []).find((x) => x.fp === fp);
+  if (!p) throw new Error('no such proposal');
+  const dev = await deviceFromIntro(p, p.by ? p.by.name : 'a member');
+  room.proposals = room.proposals.filter((x) => x.fp !== fp);
+  await saveRoom(room);
+  await inviteDevice(room, dev);
+  try { await sendRoomMessage(room, 'proposal-result', { fp, ok: true }); } catch { /* informational */ }
+  return dev;
+}
+
+export async function declineProposal(room, fp) {
+  if (room.founderFp !== state.identity.fingerprint) throw new Error('only the founder can decide');
+  room.proposals = (room.proposals || []).filter((x) => x.fp !== fp);
+  await saveRoom(room);
+  try { await sendRoomMessage(room, 'proposal-result', { fp, ok: false }); } catch { /* informational */ }
+}
+
+// ---------- message requests: two members without a channel ask through the room ----------
+
+export function deviceForMember(fp) { return state.devices.find((d) => d.fingerprint === fp && isKey32(d.pairKey)) || null; }
+
+export async function requestDm(room, fp) {
+  if (!room.members.some((m) => m.fp === fp)) throw new Error('not a member of this room');
+  room.dmAsked = Array.from(new Set([...(room.dmAsked || []), fp]));
+  await saveRoom(room);
+  await sendRoomMessage(room, 'dm-request', { to: fp });
+}
+
+export async function acceptDmRequest(room, fp) {
+  const m = room.members.find((x) => x.fp === fp);
+  if (!m) throw new Error('they are no longer in the room');
+  const dev = await deviceFromIntro(m, room.name);
+  room.dmRequests = (room.dmRequests || []).filter((x) => x.fp !== fp);
+  await saveRoom(room);
+  await sendRoomMessage(room, 'dm-accept', { to: fp });
+  return dev;
+}
+
+export async function ignoreDmRequest(room, fp) {
+  room.dmRequests = (room.dmRequests || []).filter((x) => x.fp !== fp);
+  await saveRoom(room);
+}
+
+// ---------- founder handover and dissolution ----------
+
+export async function handoverRoom(room, fp) {
+  if (room.founderFp !== state.identity.fingerprint) throw new Error('only the founder can hand over');
+  const heir = room.members.find((m) => m.fp === fp);
+  if (!heir) throw new Error('not a member');
+  const heirDev = deviceForMember(fp);
+  if (!heirDev) throw new Error('no channel to that member');
+  // the heir must be able to reach every member for key updates: introduce
+  // each member to the heir and the heir to each member, over our channels
+  for (const m of room.members) {
+    if (m.fp === state.identity.fingerprint || m.fp === fp) continue;
+    const dev = deviceForMember(m.fp);
+    try { await sendDirect(heirDev, { kind: 'intro', peer: { fp: m.fp, name: m.name, pub: m.pub, signPub: m.signPub }, roomName: room.name }); } catch { /* best effort */ }
+    if (dev) { try { await sendDirect(dev, { kind: 'intro', peer: { fp: heir.fp, name: heir.name, pub: heir.pub, signPub: heir.signPub }, roomName: room.name }); } catch { /* best effort */ } }
+  }
+  await sendRoomMessage(room, 'handover', { to: fp });
+  room.founderFp = fp;
+  room.proposals = [];
+  room.updatedAt = nowIso();
+  await saveRoom(room);
+  emit('rooms:changed', { roomId: room.id, reason: 'handover', who: heir });
+}
+
+export async function dissolveRoom(room) {
+  if (room.founderFp !== state.identity.fingerprint) throw new Error('only the founder can dissolve');
+  try { await sendRoomMessage(room, 'dissolve', {}); } catch { /* offline: our copy still ends */ }
+  room.left = true;
+  room.updatedAt = nowIso();
+  await saveRoom(room);
+  await refreshSubscriptions();
+}
+
+// ---------- unread ----------
+
+let viewing = null; // the conversation on screen; nothing counts as unread while it shows
+export function setViewing(convId) { viewing = convId; }
+async function noteUnread(convId) {
+  if (viewing === convId) return;
+  if (convId.startsWith('dm:')) {
+    const dev = deviceForDm(convId);
+    if (dev) await upsertDevice({ ...dev, unread: (dev.unread || 0) + 1 });
+  } else {
+    const room = state.rooms.find((r) => r.id === convId);
+    if (room) { room.unread = (room.unread || 0) + 1; await saveRoom(room); }
+  }
+  emit('unread:changed', { convId });
+}
+export async function clearUnread(convId) {
+  if (convId.startsWith('dm:')) {
+    const dev = deviceForDm(convId);
+    if (dev && dev.unread) await upsertDevice({ ...dev, unread: 0 });
+  } else {
+    const room = state.rooms.find((r) => r.id === convId);
+    if (room && room.unread) { room.unread = 0; await saveRoom(room); }
+  }
+  emit('unread:changed', { convId });
+}
+export function unreadTotal() {
+  return state.rooms.filter((r) => !r.left && !r.pending).reduce((n, r) => n + (r.unread || 0), 0)
+    + state.devices.reduce((n, d) => n + (d.unread || 0), 0)
+    + state.rooms.filter((r) => r.pending && !r.left).length
+    + state.rooms.reduce((n, r) => n + ((r.proposals || []).length + (r.dmRequests || []).length), 0);
 }
 
 async function acceptKeyUpdate(fromDev, body) {
@@ -507,7 +696,71 @@ async function handleRoomFrame(room, text, replay) {
       await storeMessage(room.id, clean);
       room.updatedAt = clean.rx;
       await saveRoom(room);
+      if (!replay) await noteUnread(room.id);
       emit('room:message', { roomId: room.id, msg: clean, mine: false, replay, sender });
+      break;
+    }
+    case 'joined': {
+      // the founder keeps a local note of who has answered the invitation
+      room.joined = { ...(room.joined || {}), [msg.fp]: nowIso() };
+      await saveRoom(room);
+      emit('rooms:changed', { roomId: room.id, reason: 'joined', who: sender });
+      break;
+    }
+    case 'propose': {
+      if (room.founderFp !== state.identity.fingerprint || !sender) return;
+      const d = msg.dev;
+      if (!MEMBER_SHAPE(d) || room.members.some((m) => m.fp === d.fp)) return;
+      const list = (room.proposals || []).filter((p) => p.fp !== d.fp);
+      if (list.length >= 12) return;
+      room.proposals = [...list, { fp: d.fp, name: cleanName(d.name) || d.fp.slice(0, 8), pub: d.pub, signPub: d.signPub, by: { fp: sender.fp, name: sender.name }, at: nowIso() }];
+      await saveRoom(room);
+      if (!replay) emit('rooms:changed', { roomId: room.id, reason: 'proposal', who: sender });
+      break;
+    }
+    case 'proposal-result': {
+      if (msg.fp !== room.founderFp && sender && sender.fp !== room.founderFp) return;
+      if (!replay) emit('rooms:changed', { roomId: room.id, reason: msg.ok ? 'proposal-approved' : 'proposal-declined', who: sender, fp: typeof msg.fp === 'string' ? msg.fp : null });
+      break;
+    }
+    case 'dm-request': {
+      if (msg.to !== state.identity.fingerprint || !sender) return;
+      if (deviceForMember(sender.fp)) {
+        // we already hold a channel to them (they may have forgotten theirs):
+        // consent was given once, so answer at once instead of asking again
+        if (!replay) { try { await sendRoomMessage(room, 'dm-accept', { to: sender.fp }); } catch { /* they will ask again */ } }
+        return;
+      }
+      const list = (room.dmRequests || []).filter((r) => r.fp !== sender.fp);
+      room.dmRequests = [...list, { fp: sender.fp, name: sender.name, at: nowIso() }].slice(-12);
+      await saveRoom(room);
+      if (!replay) emit('rooms:changed', { roomId: room.id, reason: 'dm-request', who: sender });
+      break;
+    }
+    case 'dm-accept': {
+      if (msg.to !== state.identity.fingerprint || !sender) return;
+      if (!(room.dmAsked || []).includes(sender.fp)) return; // we never asked
+      room.dmAsked = room.dmAsked.filter((f) => f !== sender.fp);
+      await saveRoom(room);
+      let dev;
+      try { dev = await deviceFromIntro(sender, room.name); } catch { return; }
+      if (!replay) emit('rooms:changed', { roomId: room.id, reason: 'dm-ready', who: sender, deviceId: dev.id });
+      break;
+    }
+    case 'handover': {
+      if (msg.fp !== room.founderFp || typeof msg.to !== 'string' || !room.members.some((m) => m.fp === msg.to)) return;
+      room.founderFp = msg.to;
+      room.proposals = [];
+      await saveRoom(room);
+      emit('rooms:changed', { roomId: room.id, reason: 'handover', who: room.members.find((m) => m.fp === msg.to) });
+      break;
+    }
+    case 'dissolve': {
+      if (msg.fp !== room.founderFp) return;
+      room.left = true;
+      await saveRoom(room);
+      await refreshSubscriptions();
+      emit('rooms:changed', { roomId: room.id, reason: 'dissolved', who: sender });
       break;
     }
     case 'roster': {
@@ -534,7 +787,7 @@ async function handleRoomFrame(room, text, replay) {
       if (!replay) emit('room:call', { roomId: room.id, msg, sender });
       break;
     case 'media':
-      await acceptMediaPart(room.id, msg, msg.fp, { sender, replay, afterStore: async () => { room.updatedAt = nowIso(); await saveRoom(room); } });
+      await acceptMediaPart(room.id, msg, msg.fp, { sender, replay, afterStore: async () => { room.updatedAt = nowIso(); await saveRoom(room); if (!replay) await noteUnread(room.id); } });
       break;
     default:
       break;

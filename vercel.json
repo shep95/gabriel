@@ -117,5 +117,18 @@
         }
       ]
     }
+  ],
+  "rewrites": [
+    {
+      "source": "/(.*)",
+      "has": [
+        {
+          "type": "header",
+          "key": "user-agent",
+          "value": "(?i).*(python-requests|python-urllib|python/|aiohttp|httpx|scrapy|curl/|wget/|go-http-client|java/|libwww-perl|httpclient|node-fetch|axios/|undici|headlesschrome|phantomjs|selenium|puppeteer|mechanize|httpie|powershell|lwp::|masscan|zgrab|nmap|nikto|sqlmap|googlebot|bingbot|yandex|baiduspider|duckduckbot|slurp|applebot|petalbot|semrush|ahrefs|mj12bot|dotbot|ia_archiver|archive\\.org|ccbot|gptbot|chatgpt-user|oai-searchbot|claudebot|anthropic-ai|perplexitybot|bytespider|amazonbot).*"
+        }
+      ],
+      "destination": "/robots.txt"
+    }
   ]
 }

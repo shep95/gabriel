@@ -73,6 +73,11 @@ main.content .sub { color: var(--muted); margin-bottom: 2rem; }
 .readiness .item .v.on { color: var(--accent); }
 .readiness .item .v.off { color: var(--danger); }
 
+/* a count of what waits: unread messages, invitations, requests */
+.badge { display: inline-flex; align-items: center; justify-content: center; min-width: 1.35em; height: 1.35em; padding: 0 0.4em; margin-left: 0.5em; border-radius: 999px; background: var(--accent); color: var(--void); font-size: 0.7rem; font-weight: 400; letter-spacing: 0; vertical-align: middle; line-height: 1; }
+.sidenav a .badge { position: absolute; right: 0.7rem; top: 50%; transform: translateY(-50%); margin: 0; }
+@media (max-width: 760px) { .sidenav a .badge { right: auto; left: 50%; top: 0.15rem; transform: translateX(0.6rem); min-width: 1.1em; height: 1.1em; font-size: 0.55rem; padding: 0 0.3em; } }
+
 /* lists */
 .list { display: grid; gap: 0.6rem; }
 .item-row { display: flex; align-items: center; justify-content: space-between; gap: 1rem; padding: 0.95rem 1.1rem; background: var(--bg-deep); border: 1px solid var(--line); border-radius: var(--radius); transition: border-color 260ms var(--ease), background 260ms var(--ease); }

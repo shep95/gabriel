@@ -18,6 +18,7 @@ const PROTO_MSG = utf8.encode('gabriel/msg/v1');
 const PROTO_INBOX = utf8.encode('gabriel/inbox/v1');
 const PROTO_ROOM = utf8.encode('gabriel/room/v1');
 const PROTO_ROOM_TAG = utf8.encode('gabriel/room-tag/v1');
+const PROTO_INTRO = utf8.encode('gabriel/intro/v1');
 
 export function cryptoAvailable() {
   return typeof crypto !== 'undefined' && !!crypto.subtle && typeof crypto.getRandomValues === 'function';
@@ -257,6 +258,22 @@ export async function parseInvite(text) {
 // salt orders the two nonces and appends a hash of both complete invites, so
 // the six digits also cover the signing keys and names. an intermediary who
 // relays the codes and swaps a signing key changes the digits on one side.
+// an introduction: two devices that never met derive a pair key from their
+// identity keys alone, because a device both of them trust vouched for the
+// other's public key (a room roster, or a paired device passing it on). the
+// key is as good as the introducer's honesty, so the device record is marked
+// unverified until the two compare digits in person.
+export async function deriveIntroPair(myPrivateKey, myFpHex, theirPub33, theirFpHex) {
+  if (await fingerprintOf(theirPub33) !== theirFpHex) throw new Error('fingerprint does not match the key');
+  const theirKey = await importPublic(theirPub33);
+  const shared = new Uint8Array(await subtle.deriveBits({ name: 'ECDH', public: theirKey }, myPrivateKey, 256));
+  const a = hex.decode(myFpHex), b = hex.decode(theirFpHex);
+  const salt = new Uint8Array(await subtle.digest('SHA-256', compareBytes(a, b) <= 0 ? concat(a, b) : concat(b, a)));
+  const pairKey = await hkdf(shared, salt, PROTO_INTRO, 32);
+  shared.fill(0);
+  return pairKey;
+}
+
 export async function derivePair(myPrivateKey, mine, theirs) {
   const theirKey = await importPublic(theirs.pub);
   const shared = new Uint8Array(await subtle.deriveBits({ name: 'ECDH', public: theirKey }, myPrivateKey, 256));

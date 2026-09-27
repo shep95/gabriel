@@ -21,6 +21,8 @@ import {
   loadMessages, sendRoomMessage, sendDirectMessage, refreshSubscriptions, roomPeerCount, devicePeerCount,
   memberName, dmId, deviceForDm, callTransport, deleteConversationMessages,
   sendMedia, MAX_MEDIA_BYTES,
+  joinRoom, declineInvite, resendInvite, proposeMember, approveProposal, declineProposal, requestDm, acceptDmRequest, ignoreDmRequest,
+  handoverRoom, dissolveRoom, setViewing, clearUnread, unreadTotal, deviceForMember, upsertDevice,
 } from './rooms.js';
 import { call, joinCall, leaveCall, toggleMute, toggleVideo, snapshot as callSnapshot, resumeAudio } from './calls.js';
 import { notificationSupport, requestNotifications, notifyIncoming, clearNotifications } from './notify.js';
@@ -156,12 +158,7 @@ async function loadUnlockedData() {
   await loadRooms();
 }
 
-async function saveDevice(dev) {
-  const { id, ...plain } = dev;
-  await db.put('devices', { id, enc: await sealRecord(state.vaultKey, 'devices', id, plain) });
-  const i = state.devices.findIndex((d) => d.id === id);
-  if (i >= 0) state.devices[i] = dev; else state.devices.unshift(dev);
-}
+async function saveDevice(dev) { await upsertDevice(dev); }
 
 async function saveNote(note) {
   const { id, ...plain } = note;
@@ -350,6 +347,7 @@ function renderShell() {
       <main class="content" id="content"></main>
     </div>`;
   paintBeaconChip();
+  paintNavBadge();
 }
 
 function paintBeaconChip() {
@@ -378,6 +376,7 @@ function route() {
   stopFrameCycle();
   stopCompass();
   currentRoomId = null;
+  setViewing(null);
   const el = $('#content');
   if (state.route === 'rooms' && parts[1]) { viewRoom(el, parts[1]); return; }
   const view = { overview: viewOverview, rooms: viewRooms, devices: viewDevices, notes: viewNotes, transfer: viewTransfer, privacy: viewPrivacy, settings: viewSettings }[state.route];
@@ -469,7 +468,7 @@ function renderDeviceList() {
   }
   list.innerHTML = state.devices.map((d) => `
     <div class="item-row ${d.verified ? 'trust' : ''}" data-id="${d.id}">
-      <div class="t"><div class="name">${escapeHtml(d.name)}</div><p class="sub mono" title="${escapeHtml(d.fingerprint)}">${fingerprintPretty(d.fingerprint)}</p><p class="sub">paired ${relativeTime(d.pairedAt)}${d.lastTransferAt ? ` · last transfer ${relativeTime(d.lastTransferAt)}` : ''}${d.signPub ? '' : ' · older code: cannot join rooms until re-paired'}</p></div>
+      <div class="t"><div class="name">${escapeHtml(d.name)}${badge(d.unread)}</div><p class="sub mono" title="${escapeHtml(d.fingerprint)}">${fingerprintPretty(d.fingerprint)}</p><p class="sub">${d.verified ? `paired ${relativeTime(d.pairedAt)}` : `introduced by ${escapeHtml(d.via || 'a room')} ${relativeTime(d.pairedAt)} · not verified: pair in person to confirm the key`}${d.lastTransferAt ? ` · last transfer ${relativeTime(d.lastTransferAt)}` : ''}${d.signPub ? '' : ' · older code: cannot join rooms until re-paired'}</p></div>
       <div class="a"><button class="small accent" data-act="message">message</button><button class="small ghost" data-act="rename">rename</button><button class="small danger" data-act="forget">forget</button></div>
     </div>`).join('');
   list.onclick = async (e) => {
@@ -616,15 +615,35 @@ function stopActiveScanner() { if (activeScanner) { activeScanner.stop(); active
 
 // ---------- rooms ----------
 
+const badge = (n) => (n ? `<span class="badge" aria-label="${n} unread">${n > 99 ? '99+' : n}</span>` : '');
+
 function viewRooms(el) {
-  const rooms = state.rooms.filter((r) => !r.left);
+  const rooms = state.rooms.filter((r) => !r.left && !r.pending);
+  const invitations = state.rooms.filter((r) => r.pending && !r.left);
+  const proposals = state.rooms.filter((r) => !r.left && r.founderFp === state.identity.fingerprint && (r.proposals || []).length).flatMap((r) => r.proposals.map((p) => ({ room: r, p })));
+  const requests = state.rooms.filter((r) => !r.left && (r.dmRequests || []).length).flatMap((r) => r.dmRequests.map((q) => ({ room: r, q })));
   el.innerHTML = `
     <section>
       <div class="row between"><div><h2>rooms</h2><div class="sub">group conversations and calls, sealed end to end, carried by a beacon on the local network.</div></div><button class="primary" id="room-new">new room</button></div>
       ${beacon.status === 'on' ? '' : `<div class="card" style="margin-bottom:1rem"><p>no beacon connected. rooms still open and keep their history; sending needs a beacon. <a href="#/privacy">set one up</a>.</p></div>`}
+      ${invitations.length ? `<h3>invitations</h3><div class="sub" style="margin-bottom:.8rem">a paired device added you. nothing is read or sent until you join.</div><div class="list" style="margin-bottom:1.4rem">${invitations.map((r) => `
+        <div class="item-row trust" data-id="${escapeHtml(r.id)}">
+          <div class="t"><div class="name">${escapeHtml(r.name)}</div><p class="sub">from ${escapeHtml(r.invitedBy ? r.invitedBy.name : 'a paired device')} · ${r.members.length} member${r.members.length === 1 ? '' : 's'}</p></div>
+          <div class="a"><button class="small accent" data-join="${escapeHtml(r.id)}">join</button><button class="small ghost" data-decline="${escapeHtml(r.id)}">decline</button></div>
+        </div>`).join('')}</div>` : ''}
+      ${requests.length ? `<h3>message requests</h3><div class="sub" style="margin-bottom:.8rem">a member of a room you share wants to talk one to one. accepting derives a key from the room's roster; verify in person later.</div><div class="list" style="margin-bottom:1.4rem">${requests.map(({ room, q }) => `
+        <div class="item-row" data-id="${escapeHtml(room.id)}">
+          <div class="t"><div class="name">${escapeHtml(q.name)}</div><p class="sub">in ${escapeHtml(room.name)} · ${relativeTime(q.at)}</p></div>
+          <div class="a"><button class="small accent" data-dm-accept="${escapeHtml(room.id)}|${escapeHtml(q.fp)}">accept</button><button class="small ghost" data-dm-ignore="${escapeHtml(room.id)}|${escapeHtml(q.fp)}">ignore</button></div>
+        </div>`).join('')}</div>` : ''}
+      ${proposals.length ? `<h3>awaiting your approval</h3><div class="sub" style="margin-bottom:.8rem">members proposed people for rooms you founded. approving hands them the room key through the member who vouched for them.</div><div class="list" style="margin-bottom:1.4rem">${proposals.map(({ room, p }) => `
+        <div class="item-row" data-id="${escapeHtml(room.id)}">
+          <div class="t"><div class="name">${escapeHtml(p.name)}</div><p class="sub">for ${escapeHtml(room.name)} · proposed by ${escapeHtml(p.by ? p.by.name : 'a member')} · <span class="mono">${fingerprintPretty(p.fp).slice(0, 19)}</span></p></div>
+          <div class="a"><button class="small accent" data-approve="${escapeHtml(room.id)}|${escapeHtml(p.fp)}">add</button><button class="small ghost" data-decline-proposal="${escapeHtml(room.id)}|${escapeHtml(p.fp)}">decline</button></div>
+        </div>`).join('')}</div>` : ''}
       <div class="list" id="room-list">${rooms.length ? rooms.map((r) => `
         <div class="item-row" data-id="${escapeHtml(r.id)}">
-          <div class="t"><div class="name">${escapeHtml(r.name)}</div><p class="sub">${r.members.length} member${r.members.length === 1 ? '' : 's'} · ${roomPeerCount(r)} here now · ${r.founderFp === state.identity.fingerprint ? 'you founded it' : `founded by ${escapeHtml(memberName(r, r.founderFp))}`} · ${relativeTime(r.updatedAt)}</p></div>
+          <div class="t"><div class="name">${escapeHtml(r.name)}${badge(r.unread)}</div><p class="sub">${r.members.length} member${r.members.length === 1 ? '' : 's'} · ${roomPeerCount(r)} here now · ${r.founderFp === state.identity.fingerprint ? 'you founded it' : `founded by ${escapeHtml(memberName(r, r.founderFp))}`} · ${relativeTime(r.updatedAt)}</p></div>
           <div class="a"><a href="#/rooms/${escapeHtml(r.id)}"><button class="small">open</button></a></div>
         </div>`).join('') : '<div class="empty">no rooms yet. found one and add people you have paired with.</div>'}</div>
       <div class="divider"></div>
@@ -632,11 +651,24 @@ function viewRooms(el) {
       <div class="sub" style="margin-bottom:.8rem">a direct chat rides the pair channel itself: only the two devices hold the key.</div>
       <div class="list">${state.devices.length ? state.devices.map((d) => `
         <div class="item-row" data-id="${escapeHtml(d.id)}">
-          <div class="t"><div class="name">${escapeHtml(d.name)}</div><p class="sub">${devicePeerCount(d) > 1 ? 'here now' : 'not on this beacon'}${d.lastTransferAt ? ` · last ${relativeTime(d.lastTransferAt)}` : ''}</p></div>
+          <div class="t"><div class="name">${escapeHtml(d.name)}${badge(d.unread)}</div><p class="sub">${devicePeerCount(d) > 1 ? 'here now' : 'not on this beacon'}${d.verified ? '' : ` · introduced by ${escapeHtml(d.via || 'a room')}, not verified in person`}${d.lastTransferAt ? ` · last ${relativeTime(d.lastTransferAt)}` : ''}</p></div>
           <div class="a"><a href="#/rooms/${dmId(d)}"><button class="small">open</button></a></div>
         </div>`).join('') : '<div class="empty">pair a device to message it directly.</div>'}</div>
-      <p class="locked-note">a room can only contain devices the founder has paired with in person. that is the whole membership system: no accounts, no invites by link.</p>
+      <p class="locked-note">a room holds devices its founder added: paired in person, or proposed by a member and approved. no accounts, no invites by link.</p>
     </section>`;
+  el.onclick = async (e) => {
+    const t = (attr) => e.target.closest(`[${attr}]`);
+    const split = (v) => { const i = v.lastIndexOf('|'); return [v.slice(0, i), v.slice(i + 1)]; };
+    try {
+      let b;
+      if ((b = t('data-join'))) { const r = state.rooms.find((x) => x.id === b.dataset.join); if (r) { await joinRoom(r); } return; }
+      if ((b = t('data-decline'))) { const r = state.rooms.find((x) => x.id === b.dataset.decline); if (r) { await declineInvite(r); toast('declined', 'ok'); viewRooms(el); } return; }
+      if ((b = t('data-approve'))) { const [rid, fp] = split(b.dataset.approve); const r = state.rooms.find((x) => x.id === rid); if (r) { const dev = await approveProposal(r, fp); toast(`${dev.name} added; they can join when they answer`, 'ok'); viewRooms(el); } return; }
+      if ((b = t('data-decline-proposal'))) { const [rid, fp] = split(b.dataset.declineProposal); const r = state.rooms.find((x) => x.id === rid); if (r) { await declineProposal(r, fp); viewRooms(el); } return; }
+      if ((b = t('data-dm-accept'))) { const [rid, fp] = split(b.dataset.dmAccept); const r = state.rooms.find((x) => x.id === rid); if (r) { const dev = await acceptDmRequest(r, fp); location.hash = `#/rooms/${dmId(dev)}`; } return; }
+      if ((b = t('data-dm-ignore'))) { const [rid, fp] = split(b.dataset.dmIgnore); const r = state.rooms.find((x) => x.id === rid); if (r) { await ignoreDmRequest(r, fp); viewRooms(el); } return; }
+    } catch (err) { toast(err.message, 'error'); }
+  };
   $('#room-new').onclick = async () => {
     const name = cleanName(await promptDialog({ title: 'new room', label: 'name', placeholder: 'north stairwell', maxlength: 60 }), 60);
     if (!name) return;
@@ -679,6 +711,8 @@ async function viewRoom(el, convId) {
   const conv = getConv(convId);
   if (!conv) { location.hash = '#/rooms'; return; }
   currentRoomId = convId;
+  setViewing(convId);
+  clearUnread(convId).catch(() => {});
   clearNotifications(`#/rooms/${convId}`);
   const founder = conv.isRoom && conv.room.founderFp === state.identity.fingerprint;
   const inThisCall = call.roomId === convId;
@@ -930,57 +964,181 @@ on('room:message', ({ roomId, msg, mine, replay, sender }) => {
   }
   if (!mine && !replay) notifyIncoming({ senderName: sender ? sender.name : 'someone', route: `#/rooms/${roomId}` });
 });
-on('rooms:changed', ({ roomId, reason, who }) => {
+on('rooms:changed', ({ roomId, reason, who, deviceId }) => {
+  const room = state.rooms.find((r) => r.id === roomId);
   const conv = getConv(roomId);
+  const name = room ? room.name : 'a room';
+  const whoName = who ? who.name : 'someone';
   if (state.route === 'rooms' && !currentRoomId) route();
   if (roomId === currentRoomId && conv) {
     paintMembers(conv);
     const tl = $('#timeline');
-    if (tl && reason === 'left' && who) tl.insertAdjacentHTML('beforeend', `<div class="sysline">${escapeHtml(who.name)} left</div>`);
-    if (tl && reason === 'rotated') tl.insertAdjacentHTML('beforeend', '<div class="sysline">the room key was rotated</div>');
+    const line = (t) => { if (tl) tl.insertAdjacentHTML('beforeend', `<div class="sysline">${t}</div>`); };
+    if (reason === 'left' && who) line(`${escapeHtml(whoName)} left`);
+    if (reason === 'rotated') line('the room key was rotated');
+    if (reason === 'joined' && who) line(`${escapeHtml(whoName)} joined`);
+    if (reason === 'handover' && who) line(`${escapeHtml(whoName)} is the founder now`);
+    if (reason === 'dissolved') { line('the founder dissolved the room'); toast(`${name} was dissolved`, 'error'); }
   }
-  if (reason === 'invited' && conv) {
-    toast(`added to ${conv.name}`, 'ok');
-    if (!currentRoomId && !call.roomId && state.vaultKey) location.hash = `#/rooms/${roomId}`;
+  switch (reason) {
+    case 'invitation':
+      toast(`${whoName} invited you to ${name}`, 'ok');
+      notifyIncoming({ senderName: whoName, route: '#/rooms' });
+      break;
+    case 'invited':
+      // joined: open it, unless the person is mid-conversation or on a call
+      if (!currentRoomId && !call.roomId && state.vaultKey) location.hash = `#/rooms/${roomId}`;
+      else toast(`joined ${name}`, 'ok');
+      break;
+    case 'proposal':
+      toast(`${whoName} proposed someone for ${name}`, 'ok');
+      notifyIncoming({ senderName: whoName, route: '#/rooms' });
+      break;
+    case 'proposal-approved': toast(`the founder approved a proposal in ${name}`, 'ok'); break;
+    case 'proposal-declined': toast(`the founder declined a proposal in ${name}`); break;
+    case 'dm-request':
+      toast(`${whoName} asks to message you`, 'ok');
+      notifyIncoming({ senderName: whoName, route: '#/rooms' });
+      break;
+    case 'dm-ready': {
+      const dev = state.devices.find((d) => d.id === deviceId);
+      toast(`${whoName} accepted. you can message them now.`, 'ok');
+      if (dev && !currentRoomId && !call.roomId) location.hash = `#/rooms/${dmId(dev)}`;
+      break;
+    }
+    case 'handover':
+      if (who && who.fp === state.identity.fingerprint) toast(`you are the founder of ${name} now`, 'ok');
+      break;
+    case 'dissolved':
+      if (roomId !== currentRoomId) toast(`${name} was dissolved`, 'error');
+      break;
+    default: break;
   }
+  paintNavBadge();
 });
+on('devices:changed', () => { if (state.route === 'devices' && !pairing) renderDeviceList(); if (state.route === 'rooms' && !currentRoomId) route(); });
+on('unread:changed', () => { paintNavBadge(); if (state.route === 'rooms' && !currentRoomId) route(); });
+
+// the rooms entry in the navigation carries everything that waits for a person
+function paintNavBadge() {
+  const a = document.querySelector('.sidenav a[data-route="rooms"]');
+  if (!a) return;
+  const n = unreadTotal();
+  let b = a.querySelector('.badge');
+  if (!n) { if (b) b.remove(); return; }
+  if (!b) { b = document.createElement('span'); b.className = 'badge'; a.appendChild(b); }
+  b.textContent = n > 99 ? '99+' : String(n);
+  b.setAttribute('aria-label', `${n} waiting`);
+}
 on('beacon:count', () => { const conv = currentRoomId ? getConv(currentRoomId) : null; if (conv) paintMembers(conv); });
 
 async function peopleSheet(room, founder) {
+  const meFp = state.identity.fingerprint;
   const candidates = state.devices.filter((d) => d.signPub && !room.members.some((m) => m.fp === d.fingerprint));
+  const proposals = founder ? (room.proposals || []) : [];
+  const memberRow = (m) => {
+    const isMe = m.fp === meFp;
+    const dev = isMe ? null : deviceForMember(m.fp);
+    const joined = isMe || !founder || (room.joined && room.joined[m.fp]);
+    const notes = [];
+    if (m.fp === room.founderFp) notes.push('founder');
+    if (!isMe && founder && !joined) notes.push('invited, not yet joined');
+    if (!isMe && dev && !dev.verified) notes.push(`introduced by ${escapeHtml(dev.via || 'a room')}`);
+    if (!isMe && !dev) notes.push('no direct channel yet');
+    const actions = [];
+    if (!isMe && dev) actions.push(`<a href="#/rooms/${dmId(dev)}"><button class="small ghost">message</button></a>`);
+    if (!isMe && !dev) actions.push((room.dmAsked || []).includes(m.fp) ? '<span class="hint" style="color:var(--dim)">asked</span>' : `<button class="small ghost" data-dm-request="${escapeHtml(m.fp)}">ask to message</button>`);
+    if (!isMe && founder && !joined && dev) actions.push(`<button class="small ghost" data-resend="${escapeHtml(m.fp)}">send again</button>`);
+    if (!isMe && founder && dev) actions.push(`<button class="small ghost" data-handover="${escapeHtml(m.fp)}">make founder</button>`);
+    if (!isMe && founder) actions.push(`<button class="small danger" data-remove="${escapeHtml(m.fp)}">remove</button>`);
+    return `<div class="item-row"><div class="t"><div class="name">${isMe ? 'you' : escapeHtml(m.name)}</div><p class="sub mono">${fingerprintPretty(m.fp)}</p>${notes.length ? `<p class="sub">${notes.join(' · ')}</p>` : ''}</div>${actions.length ? `<div class="a" style="flex-wrap:wrap;justify-content:flex-end">${actions.join('')}</div>` : ''}</div>`;
+  };
   const box = openOverlay(`
     <div class="row between"><h3>people in ${escapeHtml(room.name)}</h3><button class="ghost small" id="pp-close">close</button></div>
-    <div class="list" style="margin-top:1rem">${room.members.map((m) => `
-      <div class="item-row"><div class="t"><div class="name">${m.fp === state.identity.fingerprint ? 'you' : escapeHtml(m.name)}</div><p class="sub mono">${fingerprintPretty(m.fp)}</p></div>
-      ${founder && m.fp !== state.identity.fingerprint ? `<div class="a"><button class="small danger" data-remove="${escapeHtml(m.fp)}">remove</button></div>` : ''}</div>`).join('')}</div>
-    ${founder ? `<div class="divider"></div><h3>add a paired device</h3>${candidates.length ? `<div class="list" style="margin-top:.8rem">${candidates.map((d) => `<div class="item-row"><div class="t"><div class="name">${escapeHtml(d.name)}</div></div><div class="a"><button class="small accent" data-add="${escapeHtml(d.id)}">add</button></div></div>`).join('')}</div>` : '<p style="color:var(--muted);margin-top:.6rem">everyone you are paired with is already here, or paired with an older code.</p>'}
-      <div class="divider"></div><div class="row"><button class="small" id="pp-rotate">rotate key now</button><span class="hint" style="color:var(--dim)">issue a fresh epoch key to current members</span></div>` : ''}
+    <div class="list" style="margin-top:1rem">${room.members.map(memberRow).join('')}</div>
+    ${proposals.length ? `<div class="divider"></div><h3>proposed by members</h3><div class="list" style="margin-top:.8rem">${proposals.map((p) => `<div class="item-row"><div class="t"><div class="name">${escapeHtml(p.name)}</div><p class="sub">by ${escapeHtml(p.by ? p.by.name : 'a member')} · <span class="mono">${fingerprintPretty(p.fp).slice(0, 19)}</span></p></div><div class="a"><button class="small accent" data-approve="${escapeHtml(p.fp)}">add</button><button class="small ghost" data-decline-proposal="${escapeHtml(p.fp)}">decline</button></div></div>`).join('')}</div>` : ''}
     <div class="divider"></div>
-    <div class="row"><button class="small danger" id="pp-leave">${founder ? 'delete room here' : 'leave room'}</button></div>`);
+    <h3>${founder ? 'add a paired device' : 'propose a paired device'}</h3>
+    <p class="sub" style="margin-top:.3rem">${founder ? 'they receive the room key over your pairing and choose whether to join.' : 'the founder decides. if they approve, the newcomer receives the key through your pairing.'}</p>
+    ${candidates.length ? `<div class="list" style="margin-top:.8rem">${candidates.map((d) => `<div class="item-row"><div class="t"><div class="name">${escapeHtml(d.name)}</div>${d.verified ? '' : `<p class="sub">introduced by ${escapeHtml(d.via || 'a room')}</p>`}</div><div class="a"><button class="small accent" data-${founder ? 'add' : 'propose'}="${escapeHtml(d.id)}">${founder ? 'add' : 'propose'}</button></div></div>`).join('')}</div>` : '<p style="color:var(--muted);margin-top:.6rem">everyone you are paired with is already here, or paired with an older code.</p>'}
+    ${founder ? '<div class="divider"></div><div class="row"><button class="small" id="pp-rotate">rotate key now</button><span class="hint" style="color:var(--dim)">issue a fresh epoch key to current members</span></div>' : ''}
+    <div class="divider"></div>
+    <div class="row"><button class="small danger" id="pp-leave">${founder ? (room.members.length > 1 ? 'leave or dissolve' : 'delete room here') : 'leave room'}</button></div>`);
   $('#pp-close', box).onclick = closeOverlay;
+  const conv = () => getConv(room.id);
   box.onclick = async (e) => {
-    const add = e.target.closest('[data-add]'); const rem = e.target.closest('[data-remove]');
-    if (add) {
-      const dev = state.devices.find((d) => d.id === add.dataset.add);
-      try { await inviteDevice(room, dev); toast(`${dev.name} added`, 'ok'); closeOverlay(); paintMembers(getConv(room.id)); }
-      catch (err) { toast(err.message, 'error'); }
-    } else if (rem) {
-      const ok = await confirmDialog({ title: 'remove from room', body: 'they stop receiving new messages; the room key is rotated for everyone else.', okLabel: 'remove', danger: true });
-      if (!ok) return;
-      try { const failed = await removeMember(room, rem.dataset.remove); toast(failed.length ? `removed; could not reach ${failed.join(', ')} with the new key` : 'removed and key rotated', failed.length ? 'error' : 'ok'); closeOverlay(); paintMembers(getConv(room.id)); }
-      catch (err) { toast(err.message, 'error'); }
-    }
+    const t = (attr) => e.target.closest(`[${attr}]`);
+    let b;
+    try {
+      if ((b = t('data-add'))) {
+        const dev = state.devices.find((d) => d.id === b.dataset.add);
+        await inviteDevice(room, dev); toast(`${dev.name} invited; they can join when they answer`, 'ok'); closeOverlay(); paintMembers(conv());
+      } else if ((b = t('data-propose'))) {
+        const dev = state.devices.find((d) => d.id === b.dataset.propose);
+        await proposeMember(room, dev); toast(`${dev.name} proposed to the founder`, 'ok'); closeOverlay();
+      } else if ((b = t('data-approve'))) {
+        const dev = await approveProposal(room, b.dataset.approve); toast(`${dev.name} invited; they can join when they answer`, 'ok'); closeOverlay(); paintMembers(conv());
+      } else if ((b = t('data-decline-proposal'))) {
+        await declineProposal(room, b.dataset.declineProposal); closeOverlay(); peopleSheet(room, founder);
+      } else if ((b = t('data-dm-request'))) {
+        await requestDm(room, b.dataset.dmRequest); toast('asked. they decide.', 'ok'); closeOverlay();
+      } else if ((b = t('data-resend'))) {
+        await resendInvite(room, b.dataset.resend); toast('invitation sent again', 'ok');
+      } else if ((b = t('data-handover'))) {
+        const m = room.members.find((x) => x.fp === b.dataset.handover);
+        const ok = await confirmDialog({ title: `make ${m.name} the founder`, body: 'they will be the one who adds people, approves proposals and rotates the key. you stay a member. this cannot be taken back by you.', okLabel: 'hand over', danger: true });
+        if (!ok) return;
+        await handoverRoom(room, m.fp); toast(`${m.name} is the founder now`, 'ok'); closeOverlay(); paintMembers(conv());
+      } else if ((b = t('data-remove'))) {
+        const ok = await confirmDialog({ title: 'remove from room', body: 'they stop receiving new messages; the room key is rotated for everyone else.', okLabel: 'remove', danger: true });
+        if (!ok) return;
+        const failed = await removeMember(room, b.dataset.remove);
+        toast(failed.length ? `removed; could not reach ${failed.join(', ')} with the new key` : 'removed and key rotated', failed.length ? 'error' : 'ok'); closeOverlay(); paintMembers(conv());
+      }
+    } catch (err) { toast(err.message, 'error'); }
   };
   const rot = $('#pp-rotate', box);
   if (rot) rot.onclick = async () => { const failed = await rotateEpoch(room); toast(failed.length ? `rotated; could not reach ${failed.join(', ')}` : 'key rotated', failed.length ? 'error' : 'ok'); closeOverlay(); };
   $('#pp-leave', box).onclick = async () => {
-    const ok = await confirmDialog({ title: founder ? 'delete this room here' : 'leave this room', body: founder ? 'members keep their copies and can keep talking, but nobody can add people or rotate the key without you.' : 'your copy of the history is deleted. the founder can add you again.', okLabel: founder ? 'delete' : 'leave', danger: true });
+    if (founder && room.members.length > 1) return leaveAsFounderSheet(room);
+    const ok = await confirmDialog({ title: founder ? 'delete this room here' : 'leave this room', body: founder ? 'you are its only member. the room and its history are deleted from this device.' : 'your copy of the history is deleted. the founder can add you again.', okLabel: founder ? 'delete' : 'leave', danger: true });
     if (!ok) return;
     if (call.roomId === room.id) await leaveCall();
     await leaveRoom(room);
     await deleteRoom(room.id);
     closeOverlay();
     location.hash = '#/rooms';
+  };
+}
+
+// a founder with members cannot simply vanish: the room would be left with
+// nobody able to add, approve or rotate. hand it over, or end it for everyone.
+function leaveAsFounderSheet(room) {
+  const heirs = room.members.filter((m) => m.fp !== state.identity.fingerprint && deviceForMember(m.fp));
+  const box = openOverlay(`
+    <h3>you founded ${escapeHtml(room.name)}</h3>
+    <p style="margin-top:.6rem">a room needs a founder to add people, approve proposals and rotate the key. hand it to a member and leave, or dissolve it for everyone.</p>
+    ${heirs.length ? `<div class="list" style="margin-top:1rem">${heirs.map((m) => `<div class="item-row"><div class="t"><div class="name">${escapeHtml(m.name)}</div></div><div class="a"><button class="small accent" data-heir="${escapeHtml(m.fp)}">hand over and leave</button></div></div>`).join('')}</div>` : '<p class="sub" style="margin-top:.6rem">no member can take it: you have no direct channel to any of them.</p>'}
+    <div class="row" style="margin-top:1.2rem;justify-content:flex-end"><button class="ghost" id="lf-cancel">cancel</button><button class="danger" id="lf-dissolve">dissolve for everyone</button></div>`);
+  $('#lf-cancel', box).onclick = closeOverlay;
+  box.onclick = async (e) => {
+    const b = e.target.closest('[data-heir]');
+    if (!b) return;
+    try {
+      await handoverRoom(room, b.dataset.heir);
+      if (call.roomId === room.id) await leaveCall();
+      await leaveRoom(room); await deleteRoom(room.id);
+      closeOverlay(); location.hash = '#/rooms'; toast('handed over and left', 'ok');
+    } catch (err) { toast(err.message, 'error'); }
+  };
+  $('#lf-dissolve', box).onclick = async () => {
+    const ok = await confirmDialog({ title: 'dissolve this room', body: 'every member sees it end. history stays on each device; nothing new can be sent.', okLabel: 'dissolve', danger: true, typeToConfirm: 'dissolve' });
+    if (!ok) return;
+    try {
+      if (call.roomId === room.id) await leaveCall();
+      await dissolveRoom(room); await deleteRoom(room.id);
+      closeOverlay(); location.hash = '#/rooms'; toast('dissolved', 'ok');
+    } catch (err) { toast(err.message, 'error'); }
   };
 }
 
