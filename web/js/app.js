@@ -1,7 +1,7 @@
 // gabriel console: the application. one module, hash routing, no framework.
 // state lives in memory while unlocked and is thrown away on lock.
 
-import { b64url, b32, escapeHtml, fingerprintPretty, uuid, nowIso, relativeTime } from './util.js';
+import { b64url, b32, escapeHtml, fingerprintPretty, uuid, nowIso, relativeTime, cleanName } from './util.js';
 import {
   cryptoAvailable, createVault, unlockVault, rewrapVault, sealRecord, openRecord,
   generateIdentity, generateSigningKey, importPrivate, importSigningPrivate,
@@ -162,7 +162,7 @@ function renderCreate() {
   });
   form.addEventListener('submit', async (e) => {
     e.preventDefault();
-    const name = $('#c-name').value.trim();
+    const name = cleanName($('#c-name').value, 24);
     if (!name) return toast('a name is needed', 'error');
     if (pass.value.length < 8) return toast('passphrase needs at least 8 characters', 'error');
     if (pass.value !== pass2.value) return toast('the two passphrases differ', 'error');
@@ -415,7 +415,7 @@ function renderDeviceList() {
       renderDeviceList();
       toast('forgotten');
     } else if (btn.dataset.act === 'rename') {
-      const name = await promptDialog({ title: 'rename device', label: 'name', value: dev.name, maxlength: 40 });
+      const name = cleanName(await promptDialog({ title: 'rename device', label: 'name', value: dev.name, maxlength: 40 }));
       if (!name) return;
       await saveDevice({ ...dev, name });
       renderDeviceList();
@@ -550,7 +550,7 @@ function viewRooms(el) {
       <p class="locked-note">a room can only contain devices the founder has paired with in person. that is the whole membership system: no accounts, no invites by link.</p>
     </section>`;
   $('#room-new').onclick = async () => {
-    const name = await promptDialog({ title: 'new room', label: 'name', placeholder: 'north stairwell', maxlength: 60 });
+    const name = cleanName(await promptDialog({ title: 'new room', label: 'name', placeholder: 'north stairwell', maxlength: 60 }), 60);
     if (!name) return;
     const room = await createRoom(name);
     location.hash = `#/rooms/${room.id}`;

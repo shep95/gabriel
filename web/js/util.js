@@ -137,3 +137,13 @@ export function relativeTime(iso) {
   if (h < 48) return `${h} h ago`;
   return `${Math.round(h / 24)} d ago`;
 }
+
+// names come from other devices. strip bidi overrides, zero-width and control
+// characters so a name cannot reorder or hide text next to it, then bound it.
+export function cleanName(v, max = 40) {
+  return String(v ?? '')
+    .replace(/[\u0000-\u001f\u007f-\u009f\u200b-\u200f\u202a-\u202e\u2066-\u2069\ufeff]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, max);
+}

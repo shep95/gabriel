@@ -7,7 +7,7 @@
 // pairing:  ecdh(mine, theirs) -> hkdf -> pair key + 6 digit sas
 // transfer: hkdf(pair key, random salt) -> aes-gcm per message, aad binds sender->recipient
 
-import { utf8, concat, randomBytes, hex, b64url, b32, compareBytes, uuid } from './util.js';
+import { utf8, concat, randomBytes, hex, b64url, b32, compareBytes, uuid, cleanName } from './util.js';
 
 const subtle = crypto.subtle;
 
@@ -247,7 +247,7 @@ export async function parseInvite(text) {
     at = 67;
   }
   const nonce = bytes.slice(at, at + 8);
-  const name = utf8.decode(bytes.slice(at + 8)) || 'unnamed device';
+  const name = cleanName(utf8.decode(bytes.slice(at + 8)), 24) || 'unnamed device';
   return { pub, signPub, nonce, name, fingerprint: await fingerprintOf(pub), version };
 }
 

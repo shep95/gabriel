@@ -6,7 +6,7 @@
 // message is encrypted under the epoch key and signed by its sender; the beacon
 // sees random tags and ciphertext.
 
-import { b64url, hex, utf8, uuid, nowIso } from './util.js';
+import { b64url, uuid, nowIso, cleanName } from './util.js';
 import {
   inboxTag, dayString, newRoomKey, newRoomId, roomTag, sealRoomMessage, openRoomMessage,
   sealMessage, parseEnvelopeHeader, openMessage, sealRecord, openRecord,
@@ -18,6 +18,10 @@ import { beacon, subscribe, unsubscribe, publish } from './beacon.js';
 const MAX_MEMBERS = 24;
 const MAX_HISTORY = 500;
 const MAX_TEXT = 4000;
+const ROOM_ID = /^[0-9a-f]{16}$/;
+const FP = /^[0-9a-f]{64}$/;
+
+function finiteInRange(v, lo, hi) { const n = Number(v); return Number.isFinite(n) && n >= lo && n <= hi ? n : null; }
 
 // ---------- persistence ----------
 
@@ -175,12 +179,13 @@ export async function inviteDevice(room, dev) {
 }
 
 async function acceptInvite(fromDev, r) {
-  if (!r || typeof r.id !== 'string' || typeof r.key !== 'string' || !Array.isArray(r.members)) return;
+  if (!r || typeof r.id !== 'string' || !ROOM_ID.test(r.id) || typeof r.key !== 'string' || !Array.isArray(r.members)) return;
+  if (b64url.decode(r.key).length !== 32) return;
   if (r.founderFp !== fromDev.fingerprint) return; // invites come only from the founder
   if (!r.members.some((m) => m.fp === state.identity.fingerprint)) return;
   const existing = state.rooms.find((x) => x.id === r.id);
   const room = existing || { id: r.id, createdAt: nowIso(), keys: {} };
-  room.name = String(r.name || 'room').slice(0, 60);
+  room.name = cleanName(r.name, 60) || 'room';
   room.founderFp = r.founderFp;
   room.epoch = Number(r.epoch) || 1;
   room.keys[String(room.epoch)] = r.key;
@@ -196,7 +201,8 @@ async function acceptKeyUpdate(fromDev, body) {
   const room = state.rooms.find((x) => x.id === body.roomId);
   if (!room || room.founderFp !== fromDev.fingerprint) return;
   const epoch = Number(body.epoch);
-  if (!(epoch > room.epoch) || typeof body.key !== 'string') return;
+  if (!Number.isInteger(epoch) || !(epoch > room.epoch) || epoch > room.epoch + 1000 || typeof body.key !== 'string') return;
+  if (b64url.decode(body.key).length !== 32) return;
   room.epoch = epoch;
   room.keys[String(epoch)] = body.key;
   // forget keys older than two epochs; history already stored is plaintext-sealed locally
@@ -209,9 +215,10 @@ async function acceptKeyUpdate(fromDev, body) {
 }
 
 function sanitizeMembers(list) {
-  return list.filter((m) => m && typeof m.fp === 'string' && /^[0-9a-f]{64}$/.test(m.fp) && typeof m.signPub === 'string')
+  const seen = new Set();
+  return list.filter((m) => m && typeof m.fp === 'string' && FP.test(m.fp) && typeof m.signPub === 'string' && !seen.has(m.fp) && seen.add(m.fp))
     .slice(0, MAX_MEMBERS)
-    .map((m) => ({ fp: m.fp, name: String(m.name || '').slice(0, 40), pub: String(m.pub || ''), signPub: m.signPub }));
+    .map((m) => ({ fp: m.fp, name: cleanName(m.name) || m.fp.slice(0, 8), pub: String(m.pub || '').slice(0, 64), signPub: m.signPub.slice(0, 64) }));
 }
 
 // founder removes a member: new epoch key, delivered to every remaining member
@@ -290,7 +297,15 @@ async function handleRoomFrame(room, text, replay) {
   switch (msg.kind) {
     case 'text':
     case 'location':
-      if (msg.kind === 'text' && typeof msg.text !== 'string') return;
+      if (msg.kind === 'text' && (typeof msg.text !== 'string' || msg.text.length > MAX_TEXT)) return;
+      if (msg.kind === 'location') {
+        const lat = finiteInRange(msg.lat, -90, 90), lon = finiteInRange(msg.lon, -180, 180);
+        if (lat === null || lon === null) return;
+        msg.lat = lat; msg.lon = lon;
+        msg.acc = finiteInRange(msg.acc, 0, 100_000) ?? 0;
+        msg.live = !!msg.live;
+      }
+      if (typeof msg.ts !== 'string' || Number.isNaN(Date.parse(msg.ts))) msg.ts = nowIso();
       await storeMessage(room.id, msg);
       room.updatedAt = msg.ts || nowIso();
       await saveRoom(room);
