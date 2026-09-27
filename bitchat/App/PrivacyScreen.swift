@@ -52,12 +52,38 @@ final class PrivacyScreen {
                 object: nil,
                 queue: nil
             ) { _ in
-                PrivacyScreen.shared.hide()
+                PrivacyScreen.shared.hideUnlessCaptured()
+            },
+            // Screen recording, mirroring and AirPlay set `isCaptured`. A
+            // screenshot cannot be intercepted by an app, but a recording
+            // can at least be starved: the cover stays up for as long as the
+            // screen is being captured, and comes down when it stops.
+            center.addObserver(
+                forName: UIScreen.capturedDidChangeNotification,
+                object: nil,
+                queue: nil
+            ) { _ in
+                if PrivacyScreen.isCaptured {
+                    PrivacyScreen.shared.show(reason: .captured)
+                } else {
+                    PrivacyScreen.shared.hideUnlessCaptured()
+                }
             }
         ]
+        if Self.isCaptured {
+            show(reason: .captured)
+        }
     }
 
-    private func show() {
+    enum Reason { case background, captured }
+
+    /// `UIScreen.main` is deprecated; the screen that matters is the one the
+    /// key window is on.
+    private static var isCaptured: Bool {
+        activeWindow()?.screen.isCaptured ?? false
+    }
+
+    private func show(reason: Reason = .background) {
         guard cover == nil, let window = Self.activeWindow() else { return }
 
         // Opaque rather than a blur: blurred large text can stay partly
@@ -67,21 +93,26 @@ final class PrivacyScreen {
         view.autoresizingMask = [.flexibleWidth, .flexibleHeight]
 
         let label = UILabel()
-        label.text = "bitchat"
+        label.text = reason == .captured ? "bitchat · hidden while the screen is being recorded" : "bitchat"
+        label.numberOfLines = 0
+        label.textAlignment = .center
         label.font = .monospacedSystemFont(ofSize: 22, weight: .medium)
         label.textColor = .secondaryLabel
         label.translatesAutoresizingMaskIntoConstraints = false
         view.addSubview(label)
         NSLayoutConstraint.activate([
             label.centerXAnchor.constraint(equalTo: view.centerXAnchor),
-            label.centerYAnchor.constraint(equalTo: view.centerYAnchor)
+            label.centerYAnchor.constraint(equalTo: view.centerYAnchor),
+            label.leadingAnchor.constraint(greaterThanOrEqualTo: view.leadingAnchor, constant: 24),
+            label.trailingAnchor.constraint(lessThanOrEqualTo: view.trailingAnchor, constant: -24)
         ])
 
         window.addSubview(view)
         cover = view
     }
 
-    private func hide() {
+    private func hideUnlessCaptured() {
+        guard !Self.isCaptured else { return }
         cover?.removeFromSuperview()
         cover = nil
     }

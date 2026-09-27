@@ -104,7 +104,7 @@ what someone does the first time they open the app in a place with no signal.
 
 ## 12. what the console (`web/`) is for, and is not
 
-it is the part of this that works on any device with a browser and no app store: local sign-in, sealed notes, pairing by code, encrypted hand-off over a screen. it cannot reach the bluetooth mesh from a browser, and it does not pretend to. the seam for later is a shared pairing format between the app and the console, so a phone running the app and a laptop running the console can be paired with the same six digits.
+it is the part of this that works on any device with a browser and no app store: local sign-in, sealed notes, pairing by code, encrypted hand-off over a screen, and, through a beacon on the local wi-fi, end-to-end encrypted rooms and peer-to-peer calls with no internet. it cannot reach the bluetooth mesh from a browser, and it does not pretend to. the seam for later is a shared pairing format between the app and the console, so a phone running the app and a laptop running the console can be paired with the same six digits, and a beacon that also speaks the mesh packet format over a radio it owns.
 
 ---
 
