@@ -1,0 +1,17 @@
+# only web/ is deployed; keep the swift project, tests, and the beacon out of the upload
+bitchat/
+bitchat.xcodeproj/
+bitchatShareExtension/
+bitchatTests/
+localPackages/
+beacon/
+docs/
+relays/
+scripts/
+Configs/
+web/tests/
+*.md
+!web/README.md
+Package.swift
+Package.resolved
+Justfile
