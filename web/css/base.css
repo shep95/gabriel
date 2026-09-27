@@ -1,11 +1,11 @@
 /* gabriel console: shared tokens and primitives.
 
-   the world this interface lives in is the picture behind it: a cobalt sky, a
-   cascade of silver light falling into cloud, a green field, one person
-   walking. everything here is read from that. surfaces are frosted glass so
-   the field stays visible; text is the deep blue of the sky's shadow; the one
-   accent is field green and appears only when something is trusted; motion is
-   a slow drift, the pace of cloud, never a pop. */
+   the world this interface lives in is the picture behind it: a night sky
+   full of stars, a ringed moon low over a bank of cloud lit amber from below.
+   everything here is read from that. surfaces are smoked glass so the sky
+   stays visible; text is the moon's off-white; the one accent is the cloud's
+   ember and appears only when something is on or trusted; the primary button
+   is the moon, the one solid light; motion is the pace of cloud, never a pop. */
 
 /* inter (ofl-1.1), vendored so the type is the same on every device and
    needs no network. thin weights carry the register; 400 is for controls. */
@@ -13,34 +13,35 @@
 @font-face { font-family: "Inter"; font-style: normal; font-weight: 300; font-display: swap; src: url("../vendor/fonts/inter-latin-300-normal.woff2") format("woff2"); unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD; }
 @font-face { font-family: "Inter"; font-style: normal; font-weight: 400; font-display: swap; src: url("../vendor/fonts/inter-latin-400-normal.woff2") format("woff2"); unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD; }
 
-/* meadow: the default. colours sampled from the picture. */
+/* night: the default and the only picture. colours sampled from it. */
 :root {
-  --sky: #1c5b9c;            /* the open sky */
-  --sky-deep: #0d3a66;       /* sky in shadow; the darkest text */
-  --cascade: #eaf0f6;        /* the falling light */
-  --cloud: #f6f8fb;          /* cloud tops */
-  --field: #4f8f3f;          /* sunlit grass */
-  --field-deep: #2c5d2a;     /* the treeline */
+  --void: #05060a;           /* the top of the sky */
+  --sky: #0c0f17;            /* the sky near the clouds */
+  --sky-deep: #161a25;       /* sky behind thin cloud */
+  --moon: #e9e4dc;           /* the moon's face */
+  --ring: #f4efe7;           /* the ring's light; the brightest thing on screen */
+  --ember: #e0a262;          /* cloud tops lit from below */
+  --ember-deep: #8a5a2b;     /* the same light deeper in the cloud */
 
-  --bg: #cfe0ef;
-  --bg-deep: rgba(255, 255, 255, 0.55);
-  --surface: rgba(255, 255, 255, 0.62);
-  --surface-2: rgba(255, 255, 255, 0.78);
-  --glass-blur: 18px;
-  --line: rgba(13, 58, 102, 0.10);
-  --line-strong: rgba(13, 58, 102, 0.22);
-  --text: #10283f;
-  --text-soft: #2f4c66;
-  --muted: #5c7690;
-  --dim: #8ea3b8;
-  --on-sky: #f6f8fb;         /* text laid directly on the picture's sky */
-  --on-sky-soft: rgba(246, 248, 251, 0.82);
-  --accent: #3f8a3a;
-  --accent-soft: rgba(63, 138, 58, 0.14);
-  --accent-glow: rgba(63, 138, 58, 0.32);
-  --danger: #b8402e;
-  --danger-soft: rgba(184, 64, 46, 0.12);
-  --shadow: 0 24px 60px -32px rgba(13, 58, 102, 0.45);
+  --bg: #07080d;
+  --bg-deep: rgba(10, 12, 18, 0.62);
+  --surface: rgba(14, 17, 25, 0.60);
+  --surface-2: rgba(22, 25, 35, 0.84);
+  --glass-blur: 20px;
+  --line: rgba(236, 231, 223, 0.09);
+  --line-strong: rgba(236, 231, 223, 0.20);
+  --text: #ece7df;
+  --text-soft: #c6bfb4;
+  --muted: #8f887d;
+  --dim: #5f5a52;
+  --on-sky: #f4efe7;         /* text laid directly on the picture */
+  --on-sky-soft: rgba(244, 239, 231, 0.76);
+  --accent: #e0a262;         /* the cloud light: trust, presence, the thing that is on */
+  --accent-soft: rgba(224, 162, 98, 0.14);
+  --accent-glow: rgba(224, 162, 98, 0.35);
+  --danger: #e2796a;
+  --danger-soft: rgba(226, 121, 106, 0.14);
+  --shadow: 0 30px 70px -36px rgba(0, 0, 0, 0.85);
   --radius: 10px;
   --radius-sm: 7px;
   --gutter: 16px;
@@ -48,45 +49,32 @@
   --font: "Inter", -apple-system, "SF Pro Text", "Helvetica Neue", "Segoe UI", Roboto, system-ui, sans-serif;
   --mono: "SF Mono", ui-monospace, Menlo, Consolas, "Liberation Mono", monospace;
   --ease: cubic-bezier(0.22, 0.61, 0.36, 1);
-  --drift: 90s;
-  color-scheme: light;
+  --drift: 110s;
+  color-scheme: dark;
 }
 
-/* night: the same picture at dusk, for dark rooms and low battery. the field
-   turns to shadow, the glass turns to smoke, the accent stays green. */
-:root[data-theme="night"] {
-  --bg: #0a1420;
-  --bg-deep: rgba(8, 16, 26, 0.72);
-  --surface: rgba(12, 24, 38, 0.66);
-  --surface-2: rgba(16, 30, 46, 0.82);
-  --line: rgba(200, 220, 240, 0.09);
-  --line-strong: rgba(200, 220, 240, 0.2);
-  --text: #e3ebf3;
-  --text-soft: #b7c6d6;
-  --muted: #7f95ab;
-  --dim: #4f6379;
-  --on-sky: #eef3f8;
-  --on-sky-soft: rgba(238, 243, 248, 0.78);
-  --accent: #7fc46f;
-  --accent-soft: rgba(127, 196, 111, 0.14);
-  --accent-glow: rgba(127, 196, 111, 0.3);
-  --danger: #ff9a8a;
-  --danger-soft: rgba(255, 154, 138, 0.14);
-  --shadow: 0 24px 60px -30px rgba(0, 0, 0, 0.7);
-  color-scheme: dark;
+/* deep: the same sky with the picture dimmed and the glass nearly opaque,
+   for a dark room, a long night, or a battery that has to last. */
+:root[data-theme="deep"] {
+  --bg: #040509;
+  --bg-deep: rgba(6, 8, 12, 0.78);
+  --surface: rgba(9, 11, 17, 0.84);
+  --surface-2: rgba(14, 17, 25, 0.94);
+  --line: rgba(236, 231, 223, 0.07);
+  --line-strong: rgba(236, 231, 223, 0.16);
+  --on-sky-soft: rgba(244, 239, 231, 0.7);
+  --accent-glow: rgba(224, 162, 98, 0.22);
 }
 
 *, *::before, *::after { box-sizing: border-box; }
 
-html { -webkit-text-size-adjust: 100%; scrollbar-width: thin; scrollbar-color: rgba(13, 58, 102, 0.28) transparent; }
-:root[data-theme="night"] html, :root[data-theme="night"] { scrollbar-color: rgba(230, 240, 250, 0.28) transparent; }
+html { -webkit-text-size-adjust: 100%; scrollbar-width: thin; scrollbar-color: rgba(236, 231, 223, 0.22) transparent; }
 
-/* the scrollbar is a thread of the cascade: thin, pale, soft ends, no track */
+/* the scrollbar is a sliver of the ring: thin, pale, soft ends, no track */
 ::-webkit-scrollbar { width: 7px; height: 7px; }
 ::-webkit-scrollbar-track { background: transparent; }
-::-webkit-scrollbar-thumb { background: rgba(13, 58, 102, 0.26); border-radius: 999px; border: 2px solid transparent; background-clip: padding-box; }
-::-webkit-scrollbar-thumb:hover { background: rgba(13, 58, 102, 0.42); background-clip: padding-box; }
-:root[data-theme="night"] ::-webkit-scrollbar-thumb { background: rgba(230, 240, 250, 0.28); background-clip: padding-box; }
+::-webkit-scrollbar-thumb { background: rgba(236, 231, 223, 0.22); border-radius: 999px; border: 2px solid transparent; background-clip: padding-box; }
+::-webkit-scrollbar-thumb:hover { background: rgba(236, 231, 223, 0.38); background-clip: padding-box; }
 
 body {
   margin: 0;
@@ -96,64 +84,95 @@ body {
   font-family: var(--font);
   font-weight: 300;
   font-size: 16px;
-  line-height: 1.6;
+  line-height: 1.62;
   letter-spacing: 0.004em;
   -webkit-font-smoothing: antialiased;
   overflow-x: hidden;
 }
 
-/* the picture, fixed behind everything. a fixed element instead of
-   background-attachment, which phones ignore. it breathes: a very slow scale,
-   and two sheets of mist drifting across at different speeds. */
+/* the sky, fixed behind everything, in layers: a gradient of the night with
+   the clouds' ember at the horizon; a field of stars that turn very slowly;
+   the picture itself, breathing; two glows, one warm at the cloud line, one
+   cold around the ring; and a scrim so type holds over the lit cloud. */
 .bg { position: fixed; inset: 0; z-index: -1; overflow: hidden; background: var(--bg); }
+.bg > * { position: absolute; }
+.bg .sky {
+  inset: 0;
+  background:
+    radial-gradient(120% 60% at 50% 104%, rgba(224, 162, 98, 0.34), rgba(138, 90, 43, 0.12) 40%, transparent 68%),
+    linear-gradient(180deg, #04050a 0%, #0a0c14 48%, #1a1410 100%);
+}
+.bg .stars {
+  inset: -10%;
+  background-image:
+    radial-gradient(1px 1px at 12% 18%, rgba(255,255,255,0.85), transparent 60%),
+    radial-gradient(1.4px 1.4px at 68% 9%, rgba(255,255,255,0.9), transparent 60%),
+    radial-gradient(1px 1px at 84% 31%, rgba(255,255,255,0.7), transparent 60%),
+    radial-gradient(1px 1px at 33% 42%, rgba(255,255,255,0.6), transparent 60%),
+    radial-gradient(1.2px 1.2px at 50% 6%, rgba(255,255,255,0.8), transparent 60%),
+    radial-gradient(1px 1px at 91% 12%, rgba(255,255,255,0.65), transparent 60%),
+    radial-gradient(0.8px 0.8px at 22% 30%, rgba(255,255,255,0.7), transparent 60%),
+    radial-gradient(1px 1px at 76% 46%, rgba(255,255,255,0.5), transparent 60%),
+    radial-gradient(0.9px 0.9px at 5% 44%, rgba(255,255,255,0.6), transparent 60%),
+    radial-gradient(1px 1px at 58% 27%, rgba(255,255,255,0.75), transparent 60%);
+  background-size: 640px 640px, 520px 520px, 760px 760px, 440px 440px, 900px 900px, 580px 580px, 380px 380px, 700px 700px, 820px 820px, 480px 480px;
+  opacity: 0.8;
+  mask-image: linear-gradient(180deg, black 0%, black 45%, transparent 70%);
+  -webkit-mask-image: linear-gradient(180deg, black 0%, black 45%, transparent 70%);
+  animation: turn calc(var(--drift) * 6) linear infinite;
+  transform-origin: 52% 38%;
+}
 .bg .picture {
-  position: absolute; inset: -4%;
-  background: url("../img/meadow.webp") center 38% / cover no-repeat;
+  inset: -4%;
+  background: url("../img/sky.webp") center 42% / cover no-repeat;
   animation: breathe var(--drift) ease-in-out infinite alternate;
   will-change: transform;
 }
-:root[data-theme="night"] .bg .picture { filter: brightness(0.42) saturate(0.85) hue-rotate(-6deg); }
-.bg .mist { position: absolute; inset: -20%; pointer-events: none; mix-blend-mode: screen; opacity: 0.55; }
-.bg .mist.one { background: radial-gradient(60% 40% at 30% 55%, rgba(255,255,255,0.35), transparent 70%); animation: drift-a calc(var(--drift) * 1.4) ease-in-out infinite alternate; }
-.bg .mist.two { background: radial-gradient(50% 35% at 70% 50%, rgba(255,255,255,0.28), transparent 70%); animation: drift-b calc(var(--drift) * 1.9) ease-in-out infinite alternate-reverse; }
-:root[data-theme="night"] .bg .mist { opacity: 0.25; }
-/* a scrim so the lower field never fights body text */
-.bg .scrim { position: absolute; inset: 0; background: linear-gradient(180deg, rgba(13,58,102,0.10) 0%, rgba(13,58,102,0) 30%, rgba(207,224,239,0.25) 70%, rgba(207,224,239,0.55) 100%); }
-:root[data-theme="night"] .bg .scrim { background: linear-gradient(180deg, rgba(0,0,0,0.15), rgba(10,20,32,0.55) 100%); }
-@keyframes breathe { from { transform: scale(1); } to { transform: scale(1.045); } }
-@keyframes drift-a { from { transform: translate3d(-3%, 1%, 0); } to { transform: translate3d(4%, -2%, 0); } }
-@keyframes drift-b { from { transform: translate3d(3%, -1%, 0); } to { transform: translate3d(-4%, 2%, 0); } }
+:root[data-theme="deep"] .bg .picture { filter: brightness(0.62) saturate(0.9); }
+.bg .glow { inset: -20%; pointer-events: none; mix-blend-mode: screen; }
+.bg .glow.one { background: radial-gradient(55% 30% at 50% 88%, rgba(224, 162, 98, 0.22), transparent 70%); animation: drift-a calc(var(--drift) * 1.4) ease-in-out infinite alternate; }
+.bg .glow.two { background: radial-gradient(18% 14% at 52% 40%, rgba(244, 239, 231, 0.10), transparent 70%); animation: halo calc(var(--drift) * 0.5) ease-in-out infinite alternate; }
+:root[data-theme="deep"] .bg .glow { opacity: 0.5; }
+.bg .scrim { inset: 0; background: linear-gradient(180deg, rgba(4, 5, 10, 0.18) 0%, rgba(4, 5, 10, 0) 30%, rgba(4, 5, 10, 0.22) 62%, rgba(4, 5, 10, 0.62) 100%); }
+:root[data-theme="deep"] .bg .scrim { background: linear-gradient(180deg, rgba(4,5,10,0.3), rgba(4,5,10,0.75) 100%); }
+@keyframes breathe { from { transform: scale(1); } to { transform: scale(1.04); } }
+@keyframes turn { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+@keyframes drift-a { from { transform: translate3d(-3%, 1%, 0); } to { transform: translate3d(3%, -1%, 0); } }
+@keyframes halo { from { opacity: 0.6; transform: scale(1); } to { opacity: 1; transform: scale(1.12); } }
 
 h1, h2, h3, h4 {
   font-weight: 200;
-  letter-spacing: -0.012em;
+  letter-spacing: -0.014em;
   line-height: 1.12;
   margin: 0;
   color: var(--text);
+  text-wrap: balance;
 }
 h1 { font-size: clamp(2.4rem, 6vw, 4.6rem); }
 h2 { font-size: clamp(1.5rem, 3vw, 2.2rem); }
 h3 { font-size: 1.15rem; font-weight: 300; }
 
-p { margin: 0 0 1em; max-width: var(--measure); color: var(--text-soft); }
+p { margin: 0 0 1em; max-width: var(--measure); color: var(--text-soft); text-wrap: pretty; }
 p:last-child { margin-bottom: 0; }
 
 a { color: inherit; text-decoration: none; border-bottom: 1px solid var(--line-strong); transition: border-color 260ms var(--ease), color 260ms var(--ease); }
 a:hover { color: var(--accent); border-color: var(--accent); }
+/* a link that only wraps a button is not underlined; the button is the link */
+a:has(> button), .actions a { border: 0; }
 
 code, .mono { font-family: var(--mono); font-size: 0.86em; letter-spacing: 0.02em; }
 
 button, input, textarea, select { font: inherit; color: inherit; }
 
 /* glass: the material of every surface */
-.glass, .card, .item-row, .top, .appbar, .sidenav, .overlay .box, .toast, .callpanel, .bubble, .empty, .codebox, .pairdemo {
+.glass, .card, .item-row, .appbar .bar, .overlay .box, .toast, .callpanel, .bubble, .empty, .codebox, .pairdemo {
   backdrop-filter: blur(var(--glass-blur)) saturate(140%);
   -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(140%);
 }
 
 button {
   cursor: pointer;
-  background: rgba(255, 255, 255, 0.35);
+  background: rgba(255, 255, 255, 0.06);
   border: 1px solid var(--line-strong);
   border-radius: 999px;
   padding: 0.7rem 1.25rem;
@@ -162,18 +181,16 @@ button {
   transition: border-color 260ms var(--ease), background 260ms var(--ease), color 260ms var(--ease), transform 200ms var(--ease), box-shadow 260ms var(--ease);
   min-height: 44px;
 }
-:root[data-theme="night"] button { background: rgba(255, 255, 255, 0.06); }
-button:hover { border-color: var(--text-soft); background: rgba(255, 255, 255, 0.55); }
-:root[data-theme="night"] button:hover { background: rgba(255, 255, 255, 0.12); }
+button:hover { border-color: var(--text-soft); background: rgba(255, 255, 255, 0.12); }
 button:active { transform: translateY(1px); }
 button:disabled { opacity: 0.45; cursor: default; transform: none; }
-button.primary { background: var(--sky-deep); border-color: var(--sky-deep); color: var(--cloud); }
-button.primary:hover { background: var(--sky); border-color: var(--sky); }
-:root[data-theme="night"] button.primary { background: var(--cloud); border-color: var(--cloud); color: var(--sky-deep); }
+/* the primary button is the moon: the one solid light on the page */
+button.primary { background: var(--ring); border-color: var(--ring); color: var(--void); box-shadow: 0 0 0 0 rgba(244,239,231,0); }
+button.primary:hover { background: #fff; border-color: #fff; box-shadow: 0 0 34px -8px rgba(244, 239, 231, 0.45); }
 button.accent { border-color: var(--accent); color: var(--accent); background: var(--accent-soft); }
 button.accent:hover { box-shadow: 0 0 0 4px var(--accent-soft); }
 button.ghost { border-color: transparent; background: transparent; color: var(--muted); padding-inline: 0.7rem; }
-button.ghost:hover { color: var(--text); background: rgba(255, 255, 255, 0.3); }
+button.ghost:hover { color: var(--text); background: rgba(255, 255, 255, 0.07); }
 button.danger { border-color: var(--danger); color: var(--danger); background: transparent; }
 button.danger:hover { background: var(--danger-soft); }
 button.small { min-height: 34px; padding: 0.35rem 0.9rem; font-size: 0.9rem; }
@@ -189,7 +206,7 @@ input[type="text"], input[type="password"], input[type="number"], textarea, sele
   transition: border-color 220ms var(--ease), box-shadow 220ms var(--ease), background 220ms var(--ease);
   min-height: 44px;
 }
-input:focus, textarea:focus, select:focus { border-color: var(--sky); box-shadow: 0 0 0 4px rgba(28, 91, 156, 0.14); background: var(--surface-2); }
+input:focus, textarea:focus, select:focus { border-color: rgba(244, 239, 231, 0.55); box-shadow: 0 0 0 4px rgba(244, 239, 231, 0.07); background: var(--surface-2); }
 textarea { resize: vertical; min-height: 120px; line-height: 1.5; }
 ::placeholder { color: var(--dim); }
 
@@ -200,7 +217,21 @@ label { display: block; color: var(--muted); font-size: 0.85rem; letter-spacing:
 
 .wrap { width: min(1080px, 100% - 2 * var(--gutter)); margin-inline: auto; }
 
-.eyebrow { color: var(--muted); font-size: 0.78rem; letter-spacing: 0.18em; text-transform: lowercase; margin-bottom: 0.9rem; }
+/* the eyebrow opens with a short hairline, the way a caption sits under a still */
+.eyebrow { display: flex; align-items: center; gap: 0.7rem; color: var(--muted); font-size: 0.76rem; letter-spacing: 0.18em; text-transform: lowercase; margin-bottom: 0.9rem; }
+.eyebrow::before { content: ""; flex: 0 0 22px; height: 1px; background: currentColor; opacity: 0.55; }
+
+/* the wordmark: the ringed moon, then the name. the mark is a mask so it
+   takes whatever colour the text has. */
+.wordmark { display: inline-flex; align-items: center; gap: 0.7rem; font-weight: 200; letter-spacing: 0.22em; font-size: 0.95rem; border: 0; white-space: nowrap; color: var(--text); }
+.wordmark span { color: var(--muted); }
+.wordmark::before {
+  content: ""; width: 22px; height: 22px; flex: 0 0 22px; background: currentColor;
+  -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Ccircle cx='12' cy='12' r='4.3' fill='black'/%3E%3Cellipse cx='12' cy='12' rx='10.6' ry='3.1' fill='none' stroke='black' stroke-width='1.15' transform='rotate(-22 12 12)'/%3E%3C/svg%3E") center / contain no-repeat;
+  mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Ccircle cx='12' cy='12' r='4.3' fill='black'/%3E%3Cellipse cx='12' cy='12' rx='10.6' ry='3.1' fill='none' stroke='black' stroke-width='1.15' transform='rotate(-22 12 12)'/%3E%3C/svg%3E") center / contain no-repeat;
+  opacity: 0.92; animation: shimmer 9s ease-in-out infinite;
+}
+@keyframes shimmer { 0%, 100% { opacity: 0.92; } 50% { opacity: 0.6; } }
 
 .row { display: flex; gap: 0.75rem; flex-wrap: wrap; align-items: center; }
 .row.between { justify-content: space-between; }
@@ -210,9 +241,8 @@ label { display: block; color: var(--muted); font-size: 0.85rem; letter-spacing:
   display: inline-flex; align-items: center; gap: 0.5rem; white-space: nowrap;
   padding: 0.3rem 0.75rem; border-radius: 999px;
   border: 1px solid var(--line-strong); color: var(--muted); font-size: 0.8rem; letter-spacing: 0.03em;
-  background: rgba(255, 255, 255, 0.3);
+  background: rgba(255, 255, 255, 0.05);
 }
-:root[data-theme="night"] .pill { background: rgba(255, 255, 255, 0.05); }
 .pill::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: var(--dim); transition: background 500ms var(--ease), box-shadow 500ms var(--ease); }
 .pill.on { color: var(--accent); border-color: var(--accent); }
 .pill.on::before { background: var(--accent); box-shadow: 0 0 10px var(--accent-glow); }
@@ -221,12 +251,12 @@ label { display: block; color: var(--muted); font-size: 0.85rem; letter-spacing:
 
 .card {
   background: var(--surface);
-  border: 1px solid rgba(255, 255, 255, 0.55);
-  border-radius: var(--radius);
+  border: 1px solid var(--line);
+  border-radius: 14px;
   padding: 1.4rem;
-  box-shadow: var(--shadow);
+  box-shadow: var(--shadow), inset 0 1px 0 rgba(255, 255, 255, 0.07);
 }
-:root[data-theme="night"] .card { border-color: var(--line); }
+.card h3 { margin-bottom: 0.6rem; }
 .card.trust { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent-soft), var(--shadow); }
 
 .divider { height: 1px; background: var(--line); margin: 2rem 0; }
@@ -234,7 +264,7 @@ label { display: block; color: var(--muted); font-size: 0.85rem; letter-spacing:
 .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
 
 /* reveal: things arrive the way the walker does, slowly and from below */
-html.js .reveal { opacity: 0; transform: translateY(12px); transition: opacity 1000ms var(--ease), transform 1000ms var(--ease); transition-delay: calc(var(--i, 0) * 110ms); }
+html.js .reveal { opacity: 0; transform: translateY(14px); transition: opacity 1000ms var(--ease), transform 1000ms var(--ease); transition-delay: calc(var(--i, 0) * 120ms); }
 html.js .reveal.in { opacity: 1; transform: none; }
 
 /* code block for pairing / transfer text */
@@ -256,7 +286,7 @@ html.js .reveal.in { opacity: 1; transform: none; }
 .qrframe {
   display: inline-block;
   padding: 12px;
-  background: #f4f6f8;
+  background: var(--ring);
   border-radius: 8px;
   line-height: 0;
   box-shadow: var(--shadow);
@@ -277,23 +307,23 @@ html.js .reveal.in { opacity: 1; transform: none; }
 .toast {
   position: fixed; left: 50%; bottom: calc(var(--gutter) + env(safe-area-inset-bottom));
   transform: translate(-50%, 20px);
-  background: var(--surface-2); border: 1px solid rgba(255, 255, 255, 0.6);
+  background: var(--surface-2); border: 1px solid var(--line-strong);
   color: var(--text); padding: 0.7rem 1.1rem; border-radius: 999px;
   font-size: 0.9rem; opacity: 0; pointer-events: none; z-index: 50;
   transition: opacity 300ms var(--ease), transform 300ms var(--ease);
   max-width: min(90vw, 480px);
   box-shadow: var(--shadow);
 }
-:root[data-theme="night"] .toast { border-color: var(--line-strong); }
 .toast.show { opacity: 1; transform: translate(-50%, 0); }
 .toast.error { border-color: var(--danger); color: var(--danger); }
 .toast.ok { border-color: var(--accent); }
 
-/* signal rings: the only deliberate motion on an idle screen, in the pale of
-   the cascade until a trust state turns them field green */
-.signal { position: absolute; inset: 0; pointer-events: none; overflow: hidden; }
-.signal svg { position: absolute; left: 50%; top: 50%; width: min(140vw, 1400px); height: auto; transform: translate(-50%, -50%); }
-.signal circle { fill: none; stroke: rgba(255, 255, 255, 0.55); stroke-width: 1.1; transform-origin: center; transform-box: fill-box; animation: ring 12s linear infinite; opacity: 0; }
+/* signal rings: the only deliberate motion on an idle screen. they lie at
+   the tilt of the ring in the picture, pale as its light, and turn to the
+   cloud's ember when something is trusted */
+.signal { position: absolute; inset: 0; pointer-events: none; overflow: hidden; perspective: 900px; }
+.signal svg { position: absolute; left: 50%; top: 50%; width: min(150vw, 1500px); height: auto; transform: translate(-50%, -50%) rotateX(64deg) rotate(-18deg); }
+.signal circle { fill: none; stroke: rgba(244, 239, 231, 0.5); stroke-width: 1.2; transform-origin: center; transform-box: fill-box; animation: ring 14s linear infinite; opacity: 0; }
 .signal[data-trust="true"] circle { stroke: var(--accent); }
 .signal circle:nth-child(2) { animation-delay: -4s; }
 .signal circle:nth-child(3) { animation-delay: -8s; }
@@ -307,7 +337,7 @@ html.js .reveal.in { opacity: 1; transform: none; }
   *, *::before, *::after { animation-duration: 0.001ms !important; animation-iteration-count: 1 !important; transition-duration: 0.001ms !important; }
   html.js .reveal { opacity: 1; transform: none; }
   .signal circle { opacity: 0.25; transform: scale(0.6); }
-  .bg .picture, .bg .mist { animation: none; }
+  .bg .picture, .bg .stars, .bg .glow, .wordmark::before, .cue span { animation: none; }
 }
 
 @media print {

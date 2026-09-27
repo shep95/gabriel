@@ -2,7 +2,7 @@
 // and never fetch anything off this origin, with one exception the person
 // turns on by hand: map tiles from openstreetmap.org. bump VERSION on release.
 
-const VERSION = 'gabriel-console-v5';
+const VERSION = 'gabriel-console-v7';
 const PRECACHE = [
   './',
   './index.html',
@@ -42,7 +42,6 @@ const PRECACHE = [
   './icons/icon-512.png',
   './icons/maskable-512.png',
   './icons/og.png',
-  './img/meadow.webp',
   './vendor/fonts/inter-latin-200-normal.woff2',
   './vendor/fonts/inter-latin-300-normal.woff2',
   './vendor/fonts/inter-latin-400-normal.woff2',

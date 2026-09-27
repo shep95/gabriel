@@ -16,7 +16,7 @@
   <meta property="og:image" content="./icons/og.png">
   <meta property="og:image:width" content="1200">
   <meta property="og:image:height" content="630">
-  <meta property="og:image:alt" content="a cascade of light falling from a cobalt sky into cloud above a green field, one person walking">
+  <meta property="og:image:alt" content="a ringed moon low in a starred night sky over clouds lit amber from below">
   <meta property="og:locale" content="en">
   <meta name="twitter:card" content="summary_large_image">
   <meta name="twitter:title" content="gabriel console: offline messaging, rooms and calls with no account">
@@ -46,6 +46,7 @@
     ]
   }
   </script>
+  <meta name="theme-color" content="#07080d">
   <link rel="manifest" href="./manifest.webmanifest">
   <link rel="icon" href="./icons/icon.svg" type="image/svg+xml">
   <link rel="apple-touch-icon" href="./icons/icon-192.png">
@@ -55,20 +56,24 @@
   <link rel="stylesheet" href="./css/landing.css">
 </head>
 <body>
-  <div class="bg" aria-hidden="true"><div class="picture"></div><div class="mist one"></div><div class="mist two"></div><div class="scrim"></div></div>
-  <header class="top">
-    <div class="wrap">
+  <div class="bg" aria-hidden="true"><div class="sky"></div><div class="stars"></div><div class="picture"></div><div class="glow one"></div><div class="glow two"></div><div class="scrim"></div></div>
+  <header class="top" id="top">
+    <div class="wrap bar">
       <a class="wordmark" href="./index.html">gabriel <span>console</span></a>
-      <nav aria-label="page">
+      <nav aria-label="page" id="topnav">
         <a href="#signin">sign-in</a>
         <a href="#pair">pairing</a>
         <a href="#rooms">rooms &amp; calls</a>
         <a href="#shield">shield</a>
+        <a href="#where">location</a>
         <a href="#offline">offline</a>
         <a href="#install">install</a>
         <a href="#never">boundaries</a>
-        <a class="enter" href="./app.html">enter</a>
       </nav>
+      <div class="topactions">
+        <a class="enter" href="./app.html">enter<span class="arr" aria-hidden="true">→</span></a>
+        <button class="menu" id="menu-btn" type="button" aria-expanded="false" aria-controls="topnav" aria-label="sections"><span></span><span></span></button>
+      </div>
     </div>
   </header>
 
@@ -93,11 +98,12 @@
           <span class="pill" id="pill-net">network</span>
         </div>
       </div>
+      <a class="cue" href="#signin" aria-label="read on"><span></span></a>
     </section>
 
     <section class="block" id="signin" aria-labelledby="signin-title">
       <div class="wrap">
-        <div>
+        <div class="head">
           <div class="eyebrow reveal">01 · sign-in</div>
           <h2 id="signin-title" class="reveal" style="--i:1">your passphrase is the whole login.</h2>
         </div>
@@ -116,7 +122,7 @@
 
     <section class="block" id="pair" aria-labelledby="pair-title">
       <div class="wrap">
-        <div>
+        <div class="head">
           <div class="eyebrow reveal">02 · pairing</div>
           <h2 id="pair-title" class="reveal" style="--i:1">two devices, one code, six digits to confirm.</h2>
         </div>
@@ -138,7 +144,7 @@
 
     <section class="block" id="rooms" aria-labelledby="rooms-title">
       <div class="wrap">
-        <div>
+        <div class="head">
           <div class="eyebrow reveal">03 · rooms and calls</div>
           <h2 id="rooms-title" class="reveal" style="--i:1">a room is people you have met, carried by a box in the corner.</h2>
         </div>
@@ -162,7 +168,7 @@
 
     <section class="block" id="shield" aria-labelledby="shield-title">
       <div class="wrap">
-        <div>
+        <div class="head">
           <div class="eyebrow reveal">04 · shield</div>
           <h2 id="shield-title" class="reveal" style="--i:1">a screenshot should be worth as little as possible.</h2>
         </div>
@@ -182,7 +188,7 @@
 
     <section class="block" id="where" aria-labelledby="where-title">
       <div class="wrap">
-        <div>
+        <div class="head">
           <div class="eyebrow reveal">05 · location, only when you say</div>
           <h2 id="where-title" class="reveal" style="--i:1">find each other without a map server.</h2>
         </div>
@@ -195,7 +201,7 @@
 
     <section class="block" id="offline" aria-labelledby="offline-title">
       <div class="wrap">
-        <div>
+        <div class="head">
           <div class="eyebrow reveal">06 · offline</div>
           <h2 id="offline-title" class="reveal" style="--i:1">loaded once, it stays.</h2>
         </div>
@@ -216,7 +222,7 @@
 
     <section class="block" id="install" aria-labelledby="install-title">
       <div class="wrap">
-        <div>
+        <div class="head">
           <div class="eyebrow reveal">07 · install</div>
           <h2 id="install-title" class="reveal" style="--i:1">from this page, on anything with a browser.</h2>
         </div>
@@ -234,7 +240,7 @@
 
     <section class="block" id="never" aria-labelledby="never-title">
       <div class="wrap">
-        <div>
+        <div class="head">
           <div class="eyebrow reveal">08 · boundaries</div>
           <h2 id="never-title" class="reveal" style="--i:1">what it never does.</h2>
         </div>
@@ -254,10 +260,34 @@
   </main>
 
   <footer>
-    <div class="wrap">
-      <span>gabriel console · public domain, like the mesh it accompanies</span>
-      <span>version <span class="mono" id="version">…</span></span>
+    <div class="wrap foot">
+      <div class="col brand">
+        <a class="wordmark" href="./index.html">gabriel <span>console</span></a>
+        <p>a messenger companion that lives on your device and keeps working when the network is gone.</p>
+        <div class="row"><span class="pill" id="foot-ready">offline copy</span><span class="ver">version <span class="mono" id="version">…</span></span></div>
+      </div>
+      <div class="col">
+        <div class="k">on this page</div>
+        <a href="#signin">sign-in</a>
+        <a href="#pair">pairing</a>
+        <a href="#rooms">rooms and calls</a>
+        <a href="#shield">shield</a>
+        <a href="#where">location</a>
+        <a href="#offline">offline</a>
+        <a href="#install">install</a>
+        <a href="#never">boundaries</a>
+      </div>
+      <div class="col">
+        <div class="k">source</div>
+        <span>public domain, like the mesh it accompanies</span>
+        <span>qrcode-generator · mit</span>
+        <span>jsqr · apache-2.0</span>
+        <span>leaflet · bsd-2</span>
+        <span>inter · ofl-1.1</span>
+        <span>audits and threat model in <span class="mono">docs/</span></span>
+      </div>
     </div>
+    <div class="wrap fine"><span>made to work when nothing else does.</span><span>no cookies, no analytics, no requests you did not ask for.</span></div>
   </footer>
 
   <div class="toast" id="toast" role="status" aria-live="polite"></div>

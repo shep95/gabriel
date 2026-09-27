@@ -42,12 +42,17 @@ installs a service worker and keeps working with the network off.
 
 ## look
 
-the interface is read from one picture (`img/meadow.webp`): a cobalt sky, a
-cascade of silver light falling into cloud, a green field, one person walking.
-surfaces are frosted glass so the picture stays visible; text is the sky's
-shadow; the single accent is field green and appears only at trust states;
-motion is a slow drift (the picture breathes, two sheets of mist cross it)
-and stops entirely under reduced-motion. a dusk variant is in settings.
+the interface is read from one picture (`img/sky.webp`): a night sky full of
+stars, a ringed moon low over a bank of cloud lit amber from below. surfaces
+are smoked glass so the sky stays visible; text is the moon's off-white; the
+single accent is the cloud's ember and appears only where something is on or
+trusted; the primary button is the moon, the one solid light on the page. the
+favicon is the same ringed moon. motion is the pace of cloud: the picture
+breathes, the stars turn once in eleven minutes, the glow at the cloud line
+drifts, and all of it stops under reduced-motion. a "deep" variant in
+settings dims the picture and thickens the glass for dark rooms and long
+nights. the sky is layered in css beneath the picture, so the page is whole
+before the image has decoded and offline before it has been cached.
 
 ## layout
 
@@ -72,7 +77,8 @@ web/
   js/status.js          worker registration and offline readiness probes
   js/landing.js  js/app.js
   vendor/               qrcode-generator (mit), jsQR (apache-2.0), leaflet (bsd-2), inter (ofl), with licenses
-  icons/                app icons and the social image
+  icons/                app icons (the ringed moon) and the social image
+  img/                  the picture
   scripts/set-site-url.mjs   writes canonical/og:url/sitemap for a domain
   tests/e2e.mjs         headless end-to-end check (see tests/README.md)
 ```

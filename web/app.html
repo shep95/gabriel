@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <title>gabriel console</title>
   <meta name="description" content="offline console: local sign-in, encrypted notes, device pairing by code.">
-  <meta name="theme-color" content="#1c5b9c">
+  <meta name="theme-color" content="#07080d">
   <meta name="color-scheme" content="dark light">
   <meta name="referrer" content="no-referrer">
   <meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' data: blob: https://tile.openstreetmap.org https://*.tile.openstreetmap.org; media-src 'self' blob:; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self' wss: ws://localhost:* ws://127.0.0.1:* https://tile.openstreetmap.org https://*.tile.openstreetmap.org; worker-src 'self'; manifest-src 'self'; base-uri 'none'; form-action 'none'; object-src 'none'">
@@ -18,13 +18,15 @@
   <link rel="stylesheet" href="./css/app.css">
 </head>
 <body>
-  <div class="bg" aria-hidden="true"><div class="picture"></div><div class="mist one"></div><div class="mist two"></div><div class="scrim"></div></div>
+  <div class="bg" aria-hidden="true"><div class="sky"></div><div class="stars"></div><div class="picture"></div><div class="glow one"></div><div class="glow two"></div><div class="scrim"></div></div>
   <header class="appbar">
-    <a class="wordmark" href="./index.html">gabriel <span>console</span></a>
-    <div class="right">
-      <span class="pill" id="net-pill">network</span>
-      <span class="who" id="who"></span>
-      <button class="ghost small" id="lock-btn" hidden>lock</button>
+    <div class="bar">
+      <a class="wordmark" href="./index.html">gabriel <span>console</span></a>
+      <div class="right">
+        <span class="pill" id="net-pill">network</span>
+        <span class="who" id="who"></span>
+        <button class="ghost small" id="lock-btn" hidden>lock</button>
+      </div>
     </div>
   </header>
 

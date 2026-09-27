@@ -14,6 +14,43 @@ function reveal() {
   els.forEach((e) => io.observe(e));
 }
 
+// the header takes its glass once the hero has passed under it; the phone
+// menu folds open and closed; the link for the section in view keeps its
+// underline
+function header() {
+  const top = $('#top');
+  const nav = $('#topnav');
+  const btn = $('#menu-btn');
+  if (!top || !nav) return;
+  const solid = () => top.classList.toggle('solid', window.scrollY > 24 || top.classList.contains('open'));
+  window.addEventListener('scroll', solid, { passive: true });
+  solid();
+  const close = () => { top.classList.remove('open'); if (btn) btn.setAttribute('aria-expanded', 'false'); solid(); };
+  if (btn) {
+    btn.addEventListener('click', () => {
+      const open = !top.classList.contains('open');
+      top.classList.toggle('open', open);
+      btn.setAttribute('aria-expanded', String(open));
+      solid();
+    });
+    document.addEventListener('keydown', (e) => { if (e.key === 'Escape') close(); });
+    document.addEventListener('click', (e) => { if (top.classList.contains('open') && !top.contains(e.target)) close(); });
+  }
+  const links = Array.from(nav.querySelectorAll('a[href^="#"]'));
+  links.forEach((a) => a.addEventListener('click', close));
+  if (!('IntersectionObserver' in window)) return;
+  const byId = new Map(links.map((a) => [a.getAttribute('href').slice(1), a]));
+  const visible = new Map();
+  const spy = new IntersectionObserver((entries) => {
+    for (const en of entries) visible.set(en.target.id, en.isIntersecting ? en.intersectionRatio : 0);
+    let best = null, bestRatio = 0;
+    for (const [id, r] of visible) if (r > bestRatio) { best = id; bestRatio = r; }
+    links.forEach((a) => a.classList.remove('current'));
+    if (best && byId.has(best)) byId.get(best).classList.add('current');
+  }, { rootMargin: '-30% 0px -50% 0px', threshold: [0, 0.2, 0.5, 0.8] });
+  for (const id of byId.keys()) { const sec = document.getElementById(id); if (sec) spy.observe(sec); }
+}
+
 function setPill(el, state, label) {
   el.classList.remove('on', 'warn');
   if (state === 'on') el.classList.add('on');
@@ -39,6 +76,8 @@ function paintReadiness(r) {
   net.style.color = 'var(--text-soft)';
 
   setPill($('#pill-cached'), r.cached && r.controlled ? 'on' : 'off', r.cached && r.controlled ? 'cached for offline' : 'caching for offline');
+  const fr = $('#foot-ready');
+  if (fr) setPill(fr, r.cached && r.controlled ? 'on' : 'off', r.cached && r.controlled ? 'offline copy kept on this device' : 'offline copy not complete yet');
   setPill($('#pill-crypto'), r.crypto ? 'on' : 'warn', r.crypto ? 'device cryptography ready' : 'no web cryptography');
   $('#hero-signal').dataset.trust = String(r.ready);
   $('#pairdemo').classList.toggle('trust', r.ready);
@@ -46,6 +85,7 @@ function paintReadiness(r) {
 
 async function main() {
   reveal();
+  header();
   // chromium fires this when the page qualifies for install; offer a button
   window.addEventListener('beforeinstallprompt', (e) => {
     e.preventDefault();

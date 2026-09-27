@@ -97,7 +97,7 @@ function coerceSettings(v) {
   o.beaconPassword = String(v.beaconPassword || '').slice(0, 200);
   o.beaconAuto = !!v.beaconAuto;
   o.iceServers = String(v.iceServers || '').slice(0, 2000);
-  o.theme = v.theme === 'night' ? 'night' : 'meadow';
+  o.theme = v.theme === 'deep' ? 'deep' : 'night';
   return o;
 }
 
@@ -168,10 +168,10 @@ async function saveNote(note) {
 }
 
 function applyTheme() {
-  if (state.settings.theme === 'night') document.documentElement.dataset.theme = 'night';
+  if (state.settings.theme === 'deep') document.documentElement.dataset.theme = 'deep';
   else delete document.documentElement.dataset.theme;
   const m = document.querySelector('meta[name="theme-color"]');
-  if (m) m.content = state.settings.theme === 'night' ? '#0a1420' : '#1c5b9c';
+  if (m) m.content = state.settings.theme === 'deep' ? '#040509' : '#07080d';
 }
 
 async function saveSettings() {
@@ -1222,8 +1222,8 @@ function viewSettings(el) {
       <div class="sub">everything here acts on this device only.</div>
 
       <div class="card"><h3>light</h3>
-        <p style="margin-top:.6rem">the same field by day, or at dusk for dark rooms and late hours.</p>
-        <div class="choice" style="margin-top:.8rem"><button class="small ${state.settings.theme !== 'night' ? 'on' : ''}" data-theme-pick="meadow">daylight</button><button class="small ${state.settings.theme === 'night' ? 'on' : ''}" data-theme-pick="night">dusk</button></div>
+        <p style="margin-top:.6rem">the sky as it is, or deeper: the picture dimmed and the glass denser, for a dark room or a battery that has to last.</p>
+        <div class="choice" style="margin-top:.8rem"><button class="small ${state.settings.theme !== 'deep' ? 'on' : ''}" data-theme-pick="night">night</button><button class="small ${state.settings.theme === 'deep' ? 'on' : ''}" data-theme-pick="deep">deep</button></div>
       </div>
 
       <div class="card" style="margin-top:1rem"><h3>auto-lock</h3>
@@ -1257,7 +1257,7 @@ function viewSettings(el) {
       <p class="locked-note">pairing key fingerprint <span class="mono">${state.identity.fingerprint}</span></p>
     </section>`;
 
-  el.querySelectorAll('[data-theme-pick]').forEach((b) => { b.onclick = async () => { state.settings.theme = b.dataset.themePick === 'night' ? 'night' : 'meadow'; await saveSettings(); viewSettings(el); }; });
+  el.querySelectorAll('[data-theme-pick]').forEach((b) => { b.onclick = async () => { state.settings.theme = b.dataset.themePick === 'deep' ? 'deep' : 'night'; await saveSettings(); viewSettings(el); }; });
   $('#st-lock-save').onclick = async () => {
     const v = Math.max(0, Math.min(240, Number($('#st-lock').value) || 0));
     state.settings.autoLockMinutes = v;

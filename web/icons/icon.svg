@@ -1,9 +1,33 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
-  <rect width="512" height="512" rx="96" fill="#07090c"/>
-  <g fill="none" stroke="#9fd3ff" stroke-width="10" stroke-linecap="round">
-    <circle cx="256" cy="256" r="180" opacity="0.18"/>
-    <circle cx="256" cy="256" r="120" opacity="0.38"/>
-    <circle cx="256" cy="256" r="60" opacity="0.7"/>
+  <defs>
+    <radialGradient id="ember" cx="50%" cy="112%" r="70%">
+      <stop offset="0" stop-color="#e0a262" stop-opacity="0.55"/>
+      <stop offset="0.45" stop-color="#8a5a2b" stop-opacity="0.18"/>
+      <stop offset="1" stop-color="#07080d" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="face" cx="42%" cy="38%" r="70%">
+      <stop offset="0" stop-color="#ffffff"/>
+      <stop offset="0.55" stop-color="#e9e4dc"/>
+      <stop offset="1" stop-color="#b9b2a7"/>
+    </radialGradient>
+    <radialGradient id="halo" cx="50%" cy="50%" r="50%">
+      <stop offset="0.55" stop-color="#f4efe7" stop-opacity="0.22"/>
+      <stop offset="1" stop-color="#f4efe7" stop-opacity="0"/>
+    </radialGradient>
+    <clipPath id="front"><rect x="-200" y="0" width="912" height="512" transform="rotate(-22 256 236)"/></clipPath>
+  </defs>
+  <rect width="512" height="512" rx="112" fill="#07080d"/>
+  <rect width="512" height="512" rx="112" fill="url(#ember)"/>
+  <g fill="#f4efe7">
+    <circle cx="96" cy="118" r="2.4" opacity="0.9"/><circle cx="392" cy="76" r="3" opacity="0.95"/><circle cx="436" cy="162" r="2" opacity="0.7"/>
+    <circle cx="150" cy="62" r="1.8" opacity="0.7"/><circle cx="330" cy="130" r="1.6" opacity="0.6"/><circle cx="70" cy="230" r="2" opacity="0.6"/>
+    <circle cx="452" cy="270" r="1.8" opacity="0.55"/><circle cx="250" cy="52" r="2.2" opacity="0.8"/>
   </g>
-  <circle cx="256" cy="256" r="16" fill="#9fd3ff"/>
+  <circle cx="256" cy="236" r="150" fill="url(#halo)"/>
+  <ellipse cx="256" cy="236" rx="196" ry="52" fill="none" stroke="#f4efe7" stroke-width="9" stroke-opacity="0.55" transform="rotate(-22 256 236)"/>
+  <circle cx="256" cy="236" r="78" fill="url(#face)"/>
+  <g clip-path="url(#front)">
+    <ellipse cx="256" cy="236" rx="196" ry="52" fill="none" stroke="#f4efe7" stroke-width="10" transform="rotate(-22 256 236)"/>
+    <ellipse cx="256" cy="236" rx="178" ry="42" fill="none" stroke="#e0a262" stroke-width="2.5" stroke-opacity="0.8" transform="rotate(-22 256 236)"/>
+  </g>
 </svg>
