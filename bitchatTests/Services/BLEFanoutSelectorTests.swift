@@ -5,6 +5,33 @@ import Testing
 
 struct BLEFanoutSelectorTests {
     @Test
+    func voiceFramesFanOutToEveryNonIngressLink() {
+        let peripherals = (1...9).map { "p\($0)" }
+        let centrals = (1...9).map { "c\($0)" }
+        let voice = BLEFanoutSelector.selectLinks(
+            peripheralIDs: peripherals,
+            centralIDs: centrals,
+            ingressLink: .central("c1"),
+            directedPeerHint: nil,
+            packetType: MessageType.voiceFrame.rawValue,
+            messageID: "burst-1"
+        )
+        #expect(voice.peripheralIDs == Set(peripherals))
+        #expect(voice.centralIDs == Set(centrals.dropFirst()))
+
+        // Ordinary broadcast messages at the same degree are still subset.
+        let text = BLEFanoutSelector.selectLinks(
+            peripheralIDs: peripherals,
+            centralIDs: centrals,
+            ingressLink: .central("c1"),
+            directedPeerHint: nil,
+            packetType: MessageType.message.rawValue,
+            messageID: "burst-1"
+        )
+        #expect(text.peripheralIDs.count + text.centralIDs.count < peripherals.count + centrals.count - 1)
+    }
+
+    @Test
     func directedSendUsesAllNonIngressLinks() {
         let selection = BLEFanoutSelector.selectLinks(
             peripheralIDs: ["p1", "p2"],

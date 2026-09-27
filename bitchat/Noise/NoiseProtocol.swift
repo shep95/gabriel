@@ -133,7 +133,7 @@ final class NoiseCipherState {
     // Constants for replay protection
     private static let NONCE_SIZE_BYTES = 4
     private static let REPLAY_WINDOW_SIZE = 1024
-    private static let REPLAY_WINDOW_BYTES = REPLAY_WINDOW_SIZE / 8 // 128 bytes
+    private static let REPLAY_WINDOW_WORDS = REPLAY_WINDOW_SIZE / 64 // 16 x UInt64
     private static let HIGH_NONCE_WARNING_THRESHOLD: UInt64 = 1_000_000_000
     
     private var key: SymmetricKey?
@@ -142,7 +142,13 @@ final class NoiseCipherState {
     
     // Sliding window replay protection (only used when useExtractedNonce = true)
     private var highestReceivedNonce: UInt64 = 0
-    private var replayWindow: [UInt8] = Array(repeating: 0, count: REPLAY_WINDOW_BYTES)
+    // Bit `offset` (0 = highestReceivedNonce, 1 = one older, ...) lives at
+    // word offset/64, bit offset%64. Advancing the highest nonce by N moves
+    // every set bit N positions toward higher offsets. The previous byte-array
+    // form shifted in the opposite direction (MSB-first arithmetic on an
+    // LSB-first layout), which left the seven most recent nonces replayable
+    // after every advance that was not a multiple of eight.
+    private var replayWindow: [UInt64] = Array(repeating: 0, count: REPLAY_WINDOW_WORDS)
     
     init() {}
     
@@ -181,47 +187,57 @@ final class NoiseCipherState {
         }
 
         let offset = Int(highestReceivedNonce - receivedNonce)
-        let byteIndex = offset / 8
-        let bitIndex = offset % 8
-
-        return (replayWindow[byteIndex] & (1 << bitIndex)) == 0  // Not yet seen
+        return !Self.isSet(replayWindow, offset: offset)  // Not yet seen
     }
-    
+
     /// Mark nonce as seen in replay window
     private func markNonceAsSeen(_ receivedNonce: UInt64) {
         if receivedNonce > highestReceivedNonce {
             let shift = Int(receivedNonce - highestReceivedNonce)
-            
+
             if shift >= Self.REPLAY_WINDOW_SIZE {
-                // Clear entire window - shift is too large
-                replayWindow = Array(repeating: 0, count: Self.REPLAY_WINDOW_BYTES)
+                // Everything previously seen is now older than the window.
+                replayWindow = Array(repeating: 0, count: Self.REPLAY_WINDOW_WORDS)
             } else {
-                // Shift window right by `shift` bits
-                for i in stride(from: Self.REPLAY_WINDOW_BYTES - 1, through: 0, by: -1) {
-                    let sourceByteIndex = i - shift / 8
-                    var newByte: UInt8 = 0
-                    
-                    if sourceByteIndex >= 0 {
-                        newByte = replayWindow[sourceByteIndex] >> (shift % 8)
-                        if sourceByteIndex > 0 && shift % 8 != 0 {
-                            newByte |= replayWindow[sourceByteIndex - 1] << (8 - shift % 8)
-                        }
-                    }
-                    
-                    replayWindow[i] = newByte
-                }
+                replayWindow = Self.shiftedTowardOlder(replayWindow, by: shift)
             }
-            
+
             highestReceivedNonce = receivedNonce
-            replayWindow[0] |= 1  // Mark most recent bit as seen
+            replayWindow[0] |= 1  // offset 0 = the new highest nonce
         } else {
             let offset = Int(highestReceivedNonce - receivedNonce)
-            let byteIndex = offset / 8
-            let bitIndex = offset % 8
-            replayWindow[byteIndex] |= (1 << bitIndex)
+            Self.set(&replayWindow, offset: offset)
         }
     }
-    
+
+    private static func isSet(_ window: [UInt64], offset: Int) -> Bool {
+        (window[offset / 64] >> UInt64(offset % 64)) & 1 == 1
+    }
+
+    private static func set(_ window: inout [UInt64], offset: Int) {
+        window[offset / 64] |= (1 << UInt64(offset % 64))
+    }
+
+    /// Returns the window with every set bit moved `shift` offsets toward
+    /// "older" (higher offset). Bits pushed past the last word fall out of the
+    /// window, which is exactly the nonces that have become too old to accept.
+    private static func shiftedTowardOlder(_ window: [UInt64], by shift: Int) -> [UInt64] {
+        precondition(shift > 0 && shift < REPLAY_WINDOW_SIZE)
+        let wordShift = shift / 64
+        let bitShift = UInt64(shift % 64)
+        var out = Array(repeating: UInt64(0), count: REPLAY_WINDOW_WORDS)
+        for i in stride(from: REPLAY_WINDOW_WORDS - 1, through: 0, by: -1) {
+            let source = i - wordShift
+            guard source >= 0 else { continue }
+            var word = window[source] << bitShift
+            if bitShift != 0 && source > 0 {
+                word |= window[source - 1] >> (64 - bitShift)
+            }
+            out[i] = word
+        }
+        return out
+    }
+
     /// Extract nonce from combined payload <nonce><ciphertext>
     /// Returns tuple of (nonce, ciphertext) or nil if invalid
     private func extractNonceFromCiphertextPayload(_ combinedPayload: Data) throws -> (nonce: UInt64, ciphertext: Data)? {

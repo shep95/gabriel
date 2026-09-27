@@ -207,6 +207,12 @@ enum BLEFanoutSelector {
             && packetType != MessageType.fragment.rawValue
             && packetType != MessageType.announce.rawValue
             && packetType != MessageType.requestSync.rawValue
+            // Live voice is a stream of small, unrepeatable frames: a frame
+            // that a subset skips is a 64 ms hole at every edge neighbour that
+            // only this node reaches, and there is no retransmit to fill it.
+            // Full fanout costs airtime only in dense rooms, where the relay
+            // TTL clamp already contains it.
+            && packetType != MessageType.voiceFrame.rawValue
     }
 
     private static func subsetSize(for count: Int) -> Int {

@@ -136,6 +136,47 @@ struct NoiseCoverageTests {
         }
     }
 
+    @Test("Cipher state rejects a replay at every offset inside the window")
+    func cipherStateRejectsReplayAtEveryWindowOffset() throws {
+        // Regression: the byte-array window shifted seen-bits toward newer
+        // offsets, so after each advance the seven most recent nonces read as
+        // unseen and could be replayed. Drive the window through non-multiple-
+        // of-eight advances and then probe every offset it claims to cover.
+        let key = SymmetricKey(size: .bits256)
+        let receiver = NoiseCipherState(key: key, useExtractedNonce: true)
+        var payloads: [UInt64: Data] = [:]
+
+        for nonce in UInt64(0)...2000 {
+            let payload = try makeExtractedNoncePayload(
+                key: key,
+                nonce: nonce,
+                plaintext: Data("n\(nonce)".utf8)
+            )
+            payloads[nonce] = payload
+            #expect(try receiver.decrypt(ciphertext: payload) == Data("n\(nonce)".utf8))
+        }
+
+        for offset in UInt64(0)..<1024 {
+            let nonce = 2000 - offset
+            #expect(throws: NoiseError.replayDetected, "offset \(offset) replayed") {
+                try receiver.decrypt(ciphertext: payloads[nonce]!)
+            }
+        }
+        #expect(throws: NoiseError.replayDetected) {
+            try receiver.decrypt(ciphertext: payloads[2000 - 1024]!)
+        }
+
+        // Out-of-order delivery inside the window is accepted exactly once.
+        let reordered = NoiseCipherState(key: key, useExtractedNonce: true)
+        for nonce: UInt64 in [0, 1, 2, 3, 13, 11, 12, 21, 20, 19, 7] {
+            let payload = try makeExtractedNoncePayload(key: key, nonce: nonce, plaintext: Data("r".utf8))
+            #expect(try reordered.decrypt(ciphertext: payload) == Data("r".utf8), "nonce \(nonce) first delivery")
+            #expect(throws: NoiseError.replayDetected, "nonce \(nonce) replay") {
+                try reordered.decrypt(ciphertext: payload)
+            }
+        }
+    }
+
     @Test("Cipher state covers nonce guard rails and extracted payload bounds")
     func cipherStateCoversNonceGuardRailsAndExtractedPayloadBounds() throws {
         let uninitializedCipher = NoiseCipherState()

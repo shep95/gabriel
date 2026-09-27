@@ -76,10 +76,19 @@ struct BLEFragmentAssemblyBuffer {
         metadataByKey.removeAll()
     }
 
+    /// An assembly expires when it has been idle since before `cutoff`, or
+    /// when it started more than `maxAge` before that cutoff regardless of
+    /// progress. Idle-based expiry matters for multi-hop media: a 512 KiB
+    /// transfer is ~1,100 fragments at 25-30 ms spacing, which already takes
+    /// longer than the 30 s lifetime measured from the first fragment, so
+    /// start-based expiry silently evicted large transfers that were still
+    /// making progress. The absolute bound keeps a trickling sender from
+    /// pinning an assembly slot forever.
     @discardableResult
-    mutating func removeExpired(before cutoff: Date) -> Int {
+    mutating func removeExpired(before cutoff: Date, maxAge: TimeInterval = 300) -> Int {
+        let absoluteCutoff = cutoff.addingTimeInterval(-maxAge)
         let expiredKeys = metadataByKey
-            .filter { $0.value.timestamp < cutoff }
+            .filter { $0.value.lastFragmentAt < cutoff || $0.value.timestamp < absoluteCutoff }
             .map(\.key)
 
         for key in expiredKeys {

@@ -237,6 +237,30 @@ struct BLEFragmentAssemblyBufferTests {
     }
 
     @Test
+    func removeExpiredKeepsAssembliesThatAreStillReceivingFragments() throws {
+        var buffer = BLEFragmentAssemblyBuffer()
+        let packet = makePacket(payload: makePayload(count: 512))
+        let fragments = try makeFragments(for: packet, chunkSize: 128, fragmentID: Data(repeating: 0x07, count: 8))
+        let headers = try fragments.map { try #require(BLEFragmentHeader(packet: $0)) }
+        let t0 = Date(timeIntervalSince1970: 1_000)
+
+        // Started at t0, still progressing at t0+50s: a 30 s idle cutoff
+        // measured from the last fragment must not evict it.
+        _ = buffer.append(headers[0], maxInFlightAssemblies: 8, now: t0)
+        _ = buffer.append(headers[1], maxInFlightAssemblies: 8, now: t0.addingTimeInterval(50))
+        #expect(buffer.removeExpired(before: t0.addingTimeInterval(20)) == 0)
+
+        // Idle since t0+50s: gone once the cutoff passes that instant.
+        #expect(buffer.removeExpired(before: t0.addingTimeInterval(81)) == 1)
+
+        // An assembly that trickles forever still hits the absolute bound.
+        var trickle = BLEFragmentAssemblyBuffer()
+        _ = trickle.append(headers[0], maxInFlightAssemblies: 8, now: t0)
+        _ = trickle.append(headers[1], maxInFlightAssemblies: 8, now: t0.addingTimeInterval(400))
+        #expect(trickle.removeExpired(before: t0.addingTimeInterval(401), maxAge: 300) == 1)
+    }
+
+    @Test
     func stalledBroadcastAssemblyReportsFragmentIDOnceUntilRetryLapses() throws {
         var buffer = BLEFragmentAssemblyBuffer()
         let fragmentID = Data((1...8).map { UInt8($0) })
