@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>gabriel console</title>
+  <meta name="description" content="offline console: local sign-in, encrypted notes, device pairing by code.">
+  <meta name="theme-color" content="#07090c">
+  <meta name="color-scheme" content="dark light">
+  <meta name="referrer" content="no-referrer">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' data: blob:; media-src 'self' blob:; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self'; worker-src 'self'; manifest-src 'self'; base-uri 'none'; form-action 'none'; object-src 'none'">
+  <link rel="manifest" href="./manifest.webmanifest">
+  <link rel="icon" href="./icons/icon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="./icons/icon-192.png">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <link rel="stylesheet" href="./css/base.css">
+  <link rel="stylesheet" href="./css/app.css">
+</head>
+<body>
+  <header class="appbar">
+    <a class="wordmark" href="./index.html">gabriel <span>console</span></a>
+    <div class="right">
+      <span class="pill" id="net-pill">network</span>
+      <span class="who" id="who"></span>
+      <button class="ghost small" id="lock-btn" hidden>lock</button>
+    </div>
+  </header>
+
+  <div id="root"></div>
+
+  <div class="overlay" id="overlay" role="dialog" aria-modal="true" hidden><div class="box" id="overlay-box"></div></div>
+  <div class="toast" id="toast" role="status" aria-live="polite"></div>
+
+  <script src="./vendor/qrcode.js"></script>
+  <script src="./vendor/jsQR.js"></script>
+  <script type="module" src="./js/app.js"></script>
+</body>
+</html>

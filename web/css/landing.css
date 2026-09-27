@@ -1,0 +1,78 @@
+/* landing page */
+
+.top {
+  position: sticky; top: 0; z-index: 10;
+  backdrop-filter: blur(14px) saturate(120%);
+  -webkit-backdrop-filter: blur(14px) saturate(120%);
+  background: color-mix(in srgb, var(--bg) 78%, transparent);
+  border-bottom: 1px solid var(--line);
+}
+.top .wrap { display: flex; align-items: center; justify-content: space-between; height: 60px; }
+.wordmark { font-weight: 200; letter-spacing: 0.22em; font-size: 0.95rem; border: 0; white-space: nowrap; }
+.wordmark span { color: var(--muted); }
+.top nav { display: flex; gap: 1.4rem; align-items: center; }
+.top nav a { border: 0; color: var(--muted); font-size: 0.85rem; letter-spacing: 0.05em; }
+.top nav a.enter { border: 1px solid var(--line-strong); padding: 0.5rem 1rem; border-radius: var(--radius); color: var(--text); }
+.top nav a.enter:hover { border-color: var(--text); }
+@media (max-width: 560px) { .top nav a:not(.enter) { display: none; } }
+
+.hero {
+  position: relative;
+  min-height: calc(100dvh - 60px);
+  display: grid; place-items: center;
+  padding: clamp(4rem, 12vh, 9rem) 0;
+  isolation: isolate;
+}
+.hero .wrap { position: relative; z-index: 1; }
+.hero h1 { max-width: 14ch; }
+.hero h1 em { font-style: normal; color: var(--muted); }
+.hero .lede { margin-top: 1.6rem; font-size: clamp(1.02rem, 1.6vw, 1.2rem); max-width: 52ch; }
+.hero .actions { margin-top: 2.4rem; display: flex; gap: 0.8rem; flex-wrap: wrap; align-items: center; }
+.hero .status { margin-top: 3.4rem; display: flex; gap: 0.6rem; flex-wrap: wrap; }
+
+.hero .signal { z-index: 0; mask-image: radial-gradient(circle at 50% 50%, black 0%, transparent 70%); -webkit-mask-image: radial-gradient(circle at 50% 50%, black 0%, transparent 70%); }
+
+section.block { padding: clamp(4rem, 10vh, 8rem) 0; border-top: 1px solid var(--line); }
+section.block .wrap { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.4fr); gap: clamp(2rem, 6vw, 6rem); align-items: start; }
+@media (max-width: 800px) { section.block .wrap { grid-template-columns: 1fr; } }
+
+.steps { list-style: none; margin: 0; padding: 0; counter-reset: s; display: grid; gap: 1.2rem; }
+.steps li { position: relative; padding-left: 3rem; counter-increment: s; }
+.steps li::before {
+  content: counter(s, decimal-leading-zero);
+  position: absolute; left: 0; top: 0.2rem;
+  font-family: var(--mono); font-size: 0.75rem; letter-spacing: 0.1em; color: var(--dim);
+}
+.steps li strong { display: block; font-weight: 300; color: var(--text); margin-bottom: 0.2rem; }
+.steps li p { font-size: 0.95rem; }
+
+.facts { display: grid; gap: 0.9rem; }
+.fact { display: grid; grid-template-columns: 150px 1fr; gap: 1rem; padding: 0.9rem 0; border-bottom: 1px solid var(--line); font-size: 0.95rem; }
+.fact:last-child { border-bottom: 0; }
+.fact .k { color: var(--muted); }
+.fact .v { color: var(--text-soft); }
+.fact .v.mono { color: var(--text); }
+@media (max-width: 480px) { .fact { grid-template-columns: 1fr; gap: 0.2rem; } }
+
+.never { list-style: none; margin: 0; padding: 0; display: grid; gap: 0.6rem; }
+.never li { padding: 0.75rem 0; border-bottom: 1px solid var(--line); color: var(--text-soft); display: flex; gap: 1rem; align-items: baseline; }
+.never li::before { content: "—"; color: var(--dim); }
+
+/* the pairing demonstration: two devices, one code, drawn in css */
+.pairdemo { position: relative; display: grid; grid-template-columns: 1fr auto 1fr; align-items: center; gap: 1rem; padding: 1.4rem; background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); }
+.device { border: 1px solid var(--line-strong); border-radius: 14px; aspect-ratio: 9 / 16; max-width: 130px; width: 100%; justify-self: center; position: relative; overflow: hidden; background: var(--bg-deep); }
+.device::after { content: ""; position: absolute; left: 50%; top: 8px; width: 32px; height: 4px; border-radius: 3px; background: var(--line-strong); transform: translateX(-50%); }
+.device .glyph { position: absolute; inset: 30% 22%; border: 1px solid var(--line-strong); border-radius: 2px; }
+.device .glyph::before, .device .glyph::after { content: ""; position: absolute; width: 30%; height: 30%; border: 1px solid var(--line-strong); }
+.device .glyph::before { left: 10%; top: 10%; }
+.device .glyph::after { right: 10%; bottom: 10%; }
+.device .code { position: absolute; left: 0; right: 0; bottom: 14%; text-align: center; font-family: var(--mono); font-size: 0.7rem; letter-spacing: 0.25em; color: var(--dim); transition: color 600ms var(--ease); }
+.pairdemo .link { width: clamp(40px, 8vw, 120px); height: 1px; background: linear-gradient(90deg, transparent, var(--line-strong), transparent); position: relative; }
+.pairdemo .link::after { content: ""; position: absolute; top: -2px; left: 0; width: 5px; height: 5px; border-radius: 50%; background: var(--dim); animation: travel 3.2s var(--ease) infinite; }
+@keyframes travel { 0% { left: 0; opacity: 0; } 15% { opacity: 1; } 85% { opacity: 1; } 100% { left: 100%; opacity: 0; } }
+.pairdemo.trust .device .code { color: var(--accent); }
+.pairdemo.trust .link::after { background: var(--accent); box-shadow: 0 0 10px var(--accent-glow); }
+.pairdemo.trust .device { border-color: var(--accent); }
+
+footer { padding: 3rem 0 calc(3rem + env(safe-area-inset-bottom)); border-top: 1px solid var(--line); color: var(--muted); font-size: 0.85rem; }
+footer .wrap { display: flex; gap: 1.5rem; flex-wrap: wrap; justify-content: space-between; }
