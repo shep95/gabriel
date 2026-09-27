@@ -271,7 +271,11 @@ async function main() {
     await A.page.waitForSelector('#timeline');
     await A.page.click('#room-people');
     await A.page.waitForSelector('[data-add]');
-    await A.page.click('[data-add]');
+    try { await A.page.click('[data-add]', { timeout: 10000 }); } catch (e) {
+      const why = await A.page.evaluate(() => ({ animations: document.getAnimations().map((a) => `${a.animationName || a.transitionProperty}@${(a.effect.target.id || a.effect.target.className)}`), box: document.querySelector('[data-add]')?.getBoundingClientRect().toJSON(), overlay: document.querySelector('#overlay')?.className }));
+      console.error('add button not clickable:', JSON.stringify(why));
+      throw e;
+    }
     await A.page.waitForFunction(() => document.querySelector('#toast')?.textContent.includes('added'));
     // b learns about the room over its pair inbox
     await B.page.waitForFunction(() => document.querySelector('#toast')?.textContent.includes('added to north stairwell'), null, { timeout: 15000 });
