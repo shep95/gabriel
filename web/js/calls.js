@@ -9,12 +9,12 @@
 // and the room shows that plainly.
 
 import { state, emit, on } from './state.js';
-import { sendRoomMessage } from './rooms.js';
 
 const MAX_PARTICIPANTS = 8;
 
 export const call = {
-  roomId: null,
+  roomId: null,          // the conversation this call belongs to (room id or dm id)
+  send: null,            // (body) => Promise: seals and sends a call signal inside that conversation
   callId: null,
   local: null,          // MediaStream
   peers: new Map(),     // fp -> { pc, polite, makingOffer, ignoreOffer, stream, audio }
@@ -28,20 +28,20 @@ function iceServers() {
   return (state.settings.iceServers || '').split('\n').map((s) => s.trim()).filter(Boolean).map((urls) => ({ urls }));
 }
 
-function room() { return state.rooms.find((r) => r.id === call.roomId); }
-
 async function signal(op, extra = {}) {
-  const r = room();
-  if (!r) return;
-  await sendRoomMessage(r, 'call', { op, callId: call.callId, ...extra }, { keep: false });
+  if (!call.send) return;
+  await call.send({ op, callId: call.callId, ...extra });
 }
 
-export async function joinCall(roomObj, { video = false } = {}) {
+// conv = { id, send }: a room or a direct chat; send seals a call body into it
+export async function joinCall(conv, { video = false } = {}) {
   if (call.roomId) throw new Error('already in a call');
+  if (!conv || typeof conv.id !== 'string' || typeof conv.send !== 'function') throw new Error('nothing to call');
   if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) throw new Error('this browser has no microphone access');
   call.local = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true }, video: video ? { width: { ideal: 640 }, facingMode: 'user' } : false });
   call.video = video;
-  call.roomId = roomObj.id;
+  call.roomId = conv.id;
+  call.send = conv.send;
   call.callId = call.callId || Math.random().toString(16).slice(2, 10);
   call.since = Date.now();
   call.participants = new Set([state.identity.fingerprint]);
@@ -60,7 +60,7 @@ function teardown() {
   call.peers.clear();
   if (call.local) for (const t of call.local.getTracks()) t.stop();
   call.local = null;
-  call.roomId = null; call.callId = null; call.since = null;
+  call.roomId = null; call.send = null; call.callId = null; call.since = null;
   call.participants = new Set();
   call.muted = false; call.video = false;
   emit('call:state', snapshot());
@@ -147,9 +147,12 @@ function ensurePeer(fp) {
   return p;
 }
 
-async function onSignal({ msg, sender }) {
-  if (!call.roomId || msg.callId === undefined) return;
+async function onSignal({ roomId, msg }) {
+  // a signal is only ever acted on inside the conversation the call lives in;
+  // a member of some other room must not be able to attach to this call
+  if (!call.roomId || roomId !== call.roomId || !msg || msg.callId === undefined) return;
   const from = msg.fp;
+  if (typeof from !== 'string' || from === state.identity.fingerprint) return;
   if (msg.to && msg.to !== state.identity.fingerprint) return;
   if (msg.op === 'join') {
     // whoever was already in the call offers to the newcomer; the newcomer's

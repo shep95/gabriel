@@ -27,6 +27,10 @@ export const defaults = {
   maxData: 200_000,
   maxFrame: 256 * 1024,
   maxBuffered: 16 * 1024 * 1024,
+  maxBufferBytes: 64 * 1024 * 1024,   // all replay buffers together
+  maxConnsPerAddress: 64,
+  helloFailLimit: 5,                   // failed hellos per address per minute...
+  helloFailBlockMs: 60_000,            // ...then upgrades from it are refused this long
   helloMs: 5000,
   pingMs: 30_000,
   log: () => {},
@@ -35,10 +39,12 @@ export const defaults = {
 // per-tag ring buffers. the Map is kept in least-recently-touched order so
 // eviction beyond maxTags is O(1): delete-and-reinsert on every push.
 export class Buffers {
-  constructor(size, ttlMs, maxTags) {
+  constructor(size, ttlMs, maxTags, maxBytes = Infinity) {
     this.size = size;
     this.ttlMs = ttlMs;
     this.maxTags = maxTags;
+    this.maxBytes = maxBytes;
+    this.bytes = 0;
     this.map = new Map();
   }
 
@@ -47,9 +53,18 @@ export class Buffers {
     if (b) this.map.delete(tag);
     else b = [];
     b.push(frame);
-    if (b.length > this.size) b.shift();
+    this.bytes += frame.data.length;
+    if (b.length > this.size) this.bytes -= b.shift().data.length;
     this.map.set(tag, b);
-    while (this.map.size > this.maxTags) this.map.delete(this.map.keys().next().value);
+    // least recently touched tags go first, by count and then by total bytes
+    while (this.map.size > this.maxTags || (this.bytes > this.maxBytes && this.map.size > 1)) this.evictOldest();
+  }
+
+  evictOldest() {
+    const tag = this.map.keys().next().value;
+    const b = this.map.get(tag);
+    for (const f of b) this.bytes -= f.data.length;
+    this.map.delete(tag);
   }
 
   get(tag, now) {
@@ -64,7 +79,7 @@ export class Buffers {
     for (const [tag, b] of this.map) {
       let i = 0;
       while (i < b.length && b[i].ts < cutoff) i++;
-      if (i) b.splice(0, i);
+      if (i) for (const f of b.splice(0, i)) this.bytes -= f.data.length;
       if (!b.length) this.map.delete(tag);
     }
   }
@@ -85,7 +100,8 @@ export class Hub {
     this.wss = new WebSocketServer({ noServer: true, maxPayload: this.o.maxFrame });
     this.conns = new Set();
     this.subs = new Map(); // tag -> Set<conn>
-    this.buffers = new Buffers(this.o.bufferSize, this.o.ttlMs, this.o.maxTags);
+    this.buffers = new Buffers(this.o.bufferSize, this.o.ttlMs, this.o.maxTags, this.o.maxBufferBytes);
+    this.perAddress = new Map();   // address -> { conns, fails: WindowCounter, blockedUntil }
     this.timers = [
       setInterval(() => this.pingAll(), this.o.pingMs),
       setInterval(() => this.buffers.sweep(Date.now()), this.o.sweepMs),
@@ -105,18 +121,31 @@ export class Hub {
       }
       if (pathname !== path) return reject(socket, '404 Not Found');
       if (this.conns.size >= this.o.maxConnections) return reject(socket, '503 Service Unavailable');
+      const a = this.address(req.socket.remoteAddress);
+      if (a.blockedUntil > Date.now() || a.conns >= this.o.maxConnsPerAddress) return reject(socket, '429 Too Many Requests');
       this.wss.handleUpgrade(req, socket, head, (ws) => this.wss.emit('connection', ws, req));
     });
     return this;
   }
 
   stats() {
-    return { connections: this.conns.size, tags: this.subs.size, buffers: this.buffers.count };
+    return { connections: this.conns.size, tags: this.subs.size, buffers: this.buffers.count, bufferBytes: this.buffers.bytes };
   }
 
-  onConnection(ws) {
+  address(addr) {
+    const key = addr || 'unknown';
+    let a = this.perAddress.get(key);
+    if (!a) this.perAddress.set(key, (a = { conns: 0, fails: new WindowCounter(60_000), blockedUntil: 0 }));
+    return a;
+  }
+
+  onConnection(ws, req) {
+    const addr = req && req.socket ? req.socket.remoteAddress : 'unknown';
+    const a = this.address(addr);
+    a.conns += 1;
     const c = {
       ws,
+      addr,
       id: hex16(),
       authed: false,
       alive: true,
@@ -137,6 +166,9 @@ export class Hub {
   onClose(c, code) {
     clearTimeout(c.helloTimer);
     this.conns.delete(c);
+    const a = this.address(c.addr);
+    a.conns = Math.max(0, a.conns - 1);
+    if (!a.conns && a.blockedUntil < Date.now() && !a.fails.add(0, Date.now())) this.perAddress.delete(c.addr);
     for (const tag of c.subs) {
       this.drop(c, tag);
       this.count(tag);
@@ -173,6 +205,10 @@ export class Hub {
       return c.ws.close(4002, 'unsupported version');
     }
     if (this.o.password && !(typeof m.pw === 'string' && sameSecret(m.pw, this.o.password))) {
+      // a wrong password is counted per address; past the limit that address
+      // is refused at the upgrade for a while, so guessing runs at one try a minute
+      const a = this.address(c.addr);
+      if (a.fails.add(1, now) >= this.o.helloFailLimit) a.blockedUntil = now + this.o.helloFailBlockMs;
       send(c, { t: 'error', code: 'auth' });
       return c.ws.close(4001, 'bad password');
     }

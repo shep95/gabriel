@@ -2,7 +2,7 @@
 // and never fetch anything off this origin, with one exception the person
 // turns on by hand: map tiles from openstreetmap.org. bump VERSION on release.
 
-const VERSION = 'gabriel-console-v2';
+const VERSION = 'gabriel-console-v3';
 const PRECACHE = [
   './',
   './index.html',
@@ -42,6 +42,9 @@ const PRECACHE = [
   './icons/icon-512.png',
   './icons/maskable-512.png',
   './icons/og.png',
+  './vendor/fonts/inter-latin-200-normal.woff2',
+  './vendor/fonts/inter-latin-300-normal.woff2',
+  './vendor/fonts/inter-latin-400-normal.woff2',
 ];
 
 // the only off-origin host the worker will let through. tiles are requested
@@ -84,7 +87,8 @@ self.addEventListener('fetch', (event) => {
     caches.match(event.request, { ignoreSearch: true }).then((hit) => {
       if (hit) return hit;
       return fetch(event.request).then((res) => {
-        if (res && res.ok && res.type === 'basic') {
+        // a redirected response stored in the cache throws later for navigations
+        if (res && res.ok && res.type === 'basic' && !res.redirected && !url.pathname.endsWith('/healthz')) {
           const copy = res.clone();
           caches.open(VERSION).then((cache) => cache.put(event.request, copy));
         }

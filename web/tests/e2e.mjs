@@ -324,6 +324,46 @@ async function main() {
     await A.page.click('#room-call');
     log('call: two peers connected peer to peer, mute works, leaving tears down');
 
+    // markup in a message must render as text, never as elements
+    await A.page.fill('#compose', '<img src=x onerror=alert(1)><b>bold?</b>');
+    await A.page.click('#send');
+    await B.page.waitForFunction(() => document.querySelector('#timeline')?.textContent.includes('<img src=x'), null, { timeout: 15000 });
+    const injected = await B.page.$$eval('#timeline img, #timeline b', (els) => els.length);
+    assert(injected === 0, 'message markup is escaped');
+    log('injection: markup arrives as text');
+
+    // direct chat: b messages a one to one over the pair channel, then a 1:1 call
+    await B.page.click('a[data-route="devices"]');
+    await B.page.click('[data-act="message"]');
+    await B.page.waitForSelector('#compose');
+    await B.page.fill('#compose', 'just us: meet at the gate');
+    await B.page.press('#compose', 'Enter');
+    await A.page.click('a[data-route="rooms"]');
+    await A.page.waitForFunction(() => document.body.textContent.includes('bao'), null, { timeout: 15000 });
+    await A.page.click('a[href^="#/rooms/dm:"]');
+    await A.page.waitForFunction(() => document.querySelector('#timeline')?.textContent.includes('meet at the gate'), null, { timeout: 15000 });
+    await A.page.fill('#compose', 'coming');
+    await A.page.click('#send');
+    await B.page.waitForFunction(() => document.querySelector('#timeline')?.textContent.includes('coming'), null, { timeout: 15000 });
+    await A.page.click('#room-call');
+    await A.page.waitForSelector('.callpanel');
+    await B.page.click('#room-call');
+    await A.page.waitForFunction(() => document.querySelector('.callpanel .who')?.textContent.includes('connected'), null, { timeout: 30000 });
+    await B.page.waitForFunction(() => document.querySelector('.callpanel .who')?.textContent.includes('connected'), null, { timeout: 30000 });
+    await A.page.screenshot({ path: path.join(shots, 'dm-call.png') });
+    await A.page.click('#room-call');
+    await B.page.waitForFunction(() => !document.querySelector('.callpanel .who')?.textContent.includes('connected'), null, { timeout: 15000 });
+    await B.page.click('#room-call');
+    log('direct chat: messages both ways and a one-to-one call connected');
+
+    // back to the room for the rotation check
+    await A.page.click('a[data-route="rooms"]');
+    await A.page.click('.item-row a[href^="#/rooms/"]:not([href*="dm:"])');
+    await A.page.waitForSelector('#timeline');
+    await B.page.click('a[data-route="rooms"]');
+    await B.page.click('.item-row a[href^="#/rooms/"]:not([href*="dm:"])');
+    await B.page.waitForSelector('#timeline');
+
     // removal rotates the key: b stops receiving
     await A.page.click('#room-people');
     await A.page.click('[data-remove]');

@@ -177,3 +177,4 @@ body.shield-on .shield-hint { display: block; }
 select { appearance: none; -webkit-appearance: none; }
 .choice { display: flex; gap: 0.4rem; flex-wrap: wrap; }
 .choice button.on { border-color: var(--accent); color: var(--accent); }
+.bubble .who.me { color: var(--accent); opacity: 0.85; }

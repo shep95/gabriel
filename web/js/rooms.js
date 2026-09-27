@@ -1,10 +1,10 @@
-// rooms: end-to-end encrypted group conversations carried by a beacon.
+// rooms and direct chats: end-to-end encrypted conversations carried by a beacon.
 //
 // trust model: you can only be added to a room by a device you have paired with
 // in person (the invite travels sealed under that pair key). the founder holds
-// the roster and rotates the epoch key whenever someone is removed. every
-// message is encrypted under the epoch key and signed by its sender; the beacon
-// sees random tags and ciphertext.
+// the roster and rotates the epoch key whenever the roster shrinks. every room
+// message is encrypted under the epoch key and signed by its sender; a direct
+// chat is the pair channel itself. the beacon sees random tags and ciphertext.
 
 import { b64url, uuid, nowIso, cleanName } from './util.js';
 import {
@@ -18,10 +18,24 @@ import { beacon, subscribe, unsubscribe, publish } from './beacon.js';
 const MAX_MEMBERS = 24;
 const MAX_HISTORY = 500;
 const MAX_TEXT = 4000;
+const MAX_EPOCH = 1_000_000;
 const ROOM_ID = /^[0-9a-f]{16}$/;
 const FP = /^[0-9a-f]{64}$/;
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const TS_PAST_MS = 30 * 86_400_000;
+const TS_FUTURE_MS = 5 * 60_000;
 
 function finiteInRange(v, lo, hi) { const n = Number(v); return Number.isFinite(n) && n >= lo && n <= hi ? n : null; }
+function isKey32(b64) { try { return typeof b64 === 'string' && b64url.decode(b64).length === 32; } catch { return false; } }
+
+// a sender's timestamp is shown when plausible; ordering and pruning always
+// use the time this device received the message, which nobody else controls
+function acceptedTs(ts, rx) {
+  const t = typeof ts === 'string' ? Date.parse(ts) : NaN;
+  const now = Date.parse(rx);
+  if (Number.isNaN(t) || t > now + TS_FUTURE_MS || t < now - TS_PAST_MS) return rx;
+  return ts;
+}
 
 // ---------- persistence ----------
 
@@ -44,32 +58,36 @@ export async function saveRoom(room) {
 
 export async function deleteRoom(roomId) {
   await db.del('rooms', roomId);
-  for (const m of await db.byIndex('messages', 'room', roomId)) await db.del('messages', m.id);
+  await deleteConversationMessages(roomId);
   state.rooms = state.rooms.filter((r) => r.id !== roomId);
-  const r = tagsByRoom.get(roomId);
-  if (r) { unsubscribe([r]); tagsByRoom.delete(roomId); roomsByTag.delete(r); }
+  const t = tagsByRoom.get(roomId);
+  if (t) { unsubscribe([t]); tagsByRoom.delete(roomId); roomsByTag.delete(t); }
 }
 
-export async function loadMessages(roomId) {
-  const recs = await db.byIndex('messages', 'room', roomId);
+export async function deleteConversationMessages(convId) {
+  for (const m of await db.byIndex('messages', 'room', convId)) await db.del('messages', m.id);
+}
+
+export async function loadMessages(convId) {
+  const recs = await db.byIndex('messages', 'room', convId);
   const out = [];
   for (const r of recs) {
     try { out.push({ id: r.id, ...(await openRecord(state.vaultKey, 'messages', r.id, r.enc)) }); }
     catch { /* skip */ }
   }
-  out.sort((a, b) => (a.ts || '').localeCompare(b.ts || ''));
+  out.sort((a, b) => (a.rx || a.ts || '').localeCompare(b.rx || b.ts || ''));
   return out;
 }
 
-async function storeMessage(roomId, msg) {
-  await db.put('messages', { id: msg.id, roomId, enc: await sealRecord(state.vaultKey, 'messages', msg.id, msg) });
-  const all = await db.byIndex('messages', 'room', roomId);
-  if (all.length > MAX_HISTORY) {
-    // ids are uuids, so order by stored ts is not available without opening;
-    // open only the excess candidates and drop the oldest
+async function storeMessage(convId, msg) {
+  const rec = { id: msg.id, roomId: convId, enc: await sealRecord(state.vaultKey, 'messages', msg.id, msg) };
+  await db.put('messages', rec);
+  const all = await db.byIndex('messages', 'room', convId);
+  // prune in batches so the cost is paid once per fifty messages, not per message
+  if (all.length > MAX_HISTORY + 50) {
     const opened = [];
-    for (const r of all) { try { opened.push({ id: r.id, ts: (await openRecord(state.vaultKey, 'messages', r.id, r.enc)).ts }); } catch { opened.push({ id: r.id, ts: '' }); } }
-    opened.sort((a, b) => (a.ts || '').localeCompare(b.ts || ''));
+    for (const r of all) { try { opened.push({ id: r.id, rx: (await openRecord(state.vaultKey, 'messages', r.id, r.enc)).rx || '' }); } catch { opened.push({ id: r.id, rx: '' }); } }
+    opened.sort((a, b) => a.rx.localeCompare(b.rx));
     for (const r of opened.slice(0, all.length - MAX_HISTORY)) await db.del('messages', r.id);
   }
 }
@@ -79,10 +97,13 @@ async function storeMessage(roomId, msg) {
 const roomsByTag = new Map();   // tag -> roomId
 const tagsByRoom = new Map();   // roomId -> tag
 const inboxByTag = new Map();   // tag -> deviceId
+const tagsByDevice = new Map(); // deviceId -> today's tag
 let inboxDay = null;
 
-async function currentKey(room) {
-  return b64url.decode(room.keys[String(room.epoch)]);
+function currentKey(room) {
+  const k = room.keys[String(room.epoch)];
+  if (!isKey32(k)) throw new Error('room has no usable key');
+  return b64url.decode(k);
 }
 
 export async function refreshSubscriptions() {
@@ -90,20 +111,26 @@ export async function refreshSubscriptions() {
   const wanted = [];
   for (const room of state.rooms) {
     if (room.left) continue;
-    const tag = await roomTag(await currentKey(room));
-    const old = tagsByRoom.get(room.id);
-    if (old && old !== tag) { unsubscribe([old]); roomsByTag.delete(old); }
-    tagsByRoom.set(room.id, tag); roomsByTag.set(tag, room.id); wanted.push(tag);
+    try {
+      const tag = await roomTag(currentKey(room));
+      const old = tagsByRoom.get(room.id);
+      if (old && old !== tag) { unsubscribe([old]); roomsByTag.delete(old); }
+      tagsByRoom.set(room.id, tag); roomsByTag.set(tag, room.id); wanted.push(tag);
+    } catch {
+      // one broken room must not silence every other conversation
+    }
   }
   // pair inboxes for today and yesterday, so a clock a few hours off still meets
   const today = dayString();
   const yesterday = dayString(new Date(Date.now() - 86_400_000));
   const stillWanted = new Set();
   for (const dev of state.devices) {
+    if (!isKey32(dev.pairKey)) continue;
     const pk = b64url.decode(dev.pairKey);
     for (const day of [today, yesterday]) {
       const tag = await inboxTag(pk, day);
       inboxByTag.set(tag, dev.id); stillWanted.add(tag); wanted.push(tag);
+      if (day === today) tagsByDevice.set(dev.id, tag);
     }
   }
   for (const [tag] of inboxByTag) if (!stillWanted.has(tag)) { unsubscribe([tag]); inboxByTag.delete(tag); }
@@ -116,11 +143,39 @@ setInterval(() => { if (inboxDay && inboxDay !== dayString()) refreshSubscriptio
 
 // ---------- direct (pair) channel ----------
 
-async function sendDirect(dev, payload) {
+export function dmId(dev) { return `dm:${dev.id}`; }
+export function deviceForDm(convId) {
+  if (!convId.startsWith('dm:')) return null;
+  return state.devices.find((d) => d.id === convId.slice(3)) || null;
+}
+
+async function sendDirect(dev, payload, keep = true) {
+  if (!isKey32(dev.pairKey)) throw new Error('this pairing is unusable; pair again');
   const env = await sealMessage(b64url.decode(dev.pairKey), state.identity.fingerprint, dev.fingerprint, payload);
   const tag = await inboxTag(b64url.decode(dev.pairKey));
-  await publish(tag, env.text, true);
-  return env.id;
+  await publish(tag, env.text, keep);
+  return env;
+}
+
+// a direct chat message: sealed under the pair key, stored under dm:<device>
+export async function sendDirectMessage(dev, kind, body, { keep = true } = {}) {
+  if (kind === 'text' && (typeof body.text !== 'string' || !body.text.trim())) throw new Error('nothing to send');
+  if (kind === 'text' && body.text.length > MAX_TEXT) throw new Error(`message longer than ${MAX_TEXT} characters`);
+  const env = await sendDirect(dev, { kind, ...body }, keep);
+  const msg = { id: env.id, fp: state.identity.fingerprint, ts: nowIso(), rx: nowIso(), kind, ...body };
+  if (kind === 'text' || kind === 'location') {
+    await storeMessage(dmId(dev), msg);
+    await touchDevice(dev);
+    emit('room:message', { roomId: dmId(dev), msg, mine: true });
+  }
+  return msg;
+}
+
+async function touchDevice(dev) {
+  const { id, ...plain } = { ...dev, lastTransferAt: nowIso() };
+  await db.put('devices', { id, enc: await sealRecord(state.vaultKey, 'devices', id, plain) });
+  const i = state.devices.findIndex((d) => d.id === id);
+  if (i >= 0) state.devices[i] = { id, ...plain };
 }
 
 async function handleDirect(dev, text) {
@@ -130,12 +185,45 @@ async function handleDirect(dev, text) {
   let body;
   try { body = await openMessage(b64url.decode(dev.pairKey), dev.fingerprint, state.identity.fingerprint, header); }
   catch { return; }
-  const seenKey = `${dev.id}:${body.id}`;
+  if (!UUID.test(body.id)) return;
+  const seenKey = `dev|${dev.id}|${body.id}`;
   if (await db.get('seen', seenKey)) return;
   await db.put('seen', { id: seenKey, t: nowIso() });
-  if (body.kind === 'room-invite') await acceptInvite(dev, body.room);
-  else if (body.kind === 'room-key') await acceptKeyUpdate(dev, body);
-  else if (body.kind === 'note') emit('direct:note', { from: dev, body });
+  const sender = { fp: dev.fingerprint, name: dev.name };
+  switch (body.kind) {
+    case 'room-invite': return acceptInvite(dev, body.room);
+    case 'room-key': return acceptKeyUpdate(dev, body);
+    case 'note': return emit('direct:note', { from: dev, body });
+    case 'text':
+    case 'location': {
+      const msg = normalizeMessage({ ...body, fp: dev.fingerprint });
+      if (!msg) return;
+      await storeMessage(dmId(dev), msg);
+      await touchDevice(dev);
+      return emit('room:message', { roomId: dmId(dev), msg, mine: false, replay: false, sender });
+    }
+    case 'call':
+      return emit('room:call', { roomId: dmId(dev), msg: { ...body, fp: dev.fingerprint }, sender });
+    default:
+      return undefined;
+  }
+}
+
+// shared validation for text and location messages from any peer
+function normalizeMessage(m) {
+  const rx = nowIso();
+  const out = { id: m.id, fp: m.fp, kind: m.kind, rx, ts: acceptedTs(m.ts, rx) };
+  if (m.kind === 'text') {
+    if (typeof m.text !== 'string' || !m.text.trim() || m.text.length > MAX_TEXT) return null;
+    out.text = m.text;
+  } else if (m.kind === 'location') {
+    const lat = finiteInRange(m.lat, -90, 90), lon = finiteInRange(m.lon, -180, 180);
+    if (lat === null || lon === null) return null;
+    out.lat = lat; out.lon = lon;
+    out.acc = finiteInRange(m.acc, 0, 100_000) ?? 0;
+    out.live = !!m.live;
+  } else return null;
+  return out;
 }
 
 // ---------- room lifecycle ----------
@@ -148,11 +236,12 @@ export async function createRoom(name) {
   const key = newRoomKey();
   const room = {
     id: newRoomId(),
-    name: name.trim().slice(0, 60) || 'room',
+    name: cleanName(name, 60) || 'room',
     founderFp: state.identity.fingerprint,
     epoch: 1,
     keys: { 1: b64url.encode(key) },
     members: [me()],
+    rosterAt: nowIso(),
     createdAt: nowIso(),
     updatedAt: nowIso(),
     left: false,
@@ -170,26 +259,34 @@ export async function inviteDevice(room, dev) {
   if (room.members.some((m) => m.fp === dev.fingerprint)) throw new Error(`${dev.name} is already a member`);
   const member = { fp: dev.fingerprint, name: dev.name, pub: dev.pub, signPub: dev.signPub };
   room.members = [...room.members, member];
+  room.rosterAt = nowIso();
   room.updatedAt = nowIso();
   await saveRoom(room);
   // tell the room (signed) so existing members learn the newcomer's key
-  await sendRoomMessage(room, 'roster', { members: room.members, epoch: room.epoch });
+  await sendRoomMessage(room, 'roster', { members: room.members, epoch: room.epoch, at: room.rosterAt });
   // hand the newcomer the key over the pair channel
-  await sendDirect(dev, { kind: 'room-invite', room: { id: room.id, name: room.name, founderFp: room.founderFp, epoch: room.epoch, key: room.keys[String(room.epoch)], members: room.members } });
+  await sendDirect(dev, { kind: 'room-invite', room: { id: room.id, name: room.name, founderFp: room.founderFp, epoch: room.epoch, key: room.keys[String(room.epoch)], members: room.members, rosterAt: room.rosterAt } });
 }
 
 async function acceptInvite(fromDev, r) {
-  if (!r || typeof r.id !== 'string' || !ROOM_ID.test(r.id) || typeof r.key !== 'string' || !Array.isArray(r.members)) return;
-  if (b64url.decode(r.key).length !== 32) return;
+  if (!r || typeof r.id !== 'string' || !ROOM_ID.test(r.id) || !isKey32(r.key) || !Array.isArray(r.members)) return;
   if (r.founderFp !== fromDev.fingerprint) return; // invites come only from the founder
-  if (!r.members.some((m) => m.fp === state.identity.fingerprint)) return;
+  const epoch = Number(r.epoch);
+  if (!Number.isInteger(epoch) || epoch < 1 || epoch > MAX_EPOCH) return;
+  if (!r.members.some((m) => m && m.fp === state.identity.fingerprint)) return;
   const existing = state.rooms.find((x) => x.id === r.id);
-  const room = existing || { id: r.id, createdAt: nowIso(), keys: {} };
+  // a room id already known here belongs to its founder for good: another
+  // paired device cannot re-found it under its own key and roster
+  if (existing && existing.founderFp !== r.founderFp) return;
+  if (existing && epoch < existing.epoch) return;
+  const room = existing || { id: r.id, createdAt: nowIso(), keys: {}, rosterAt: '' };
   room.name = cleanName(r.name, 60) || 'room';
   room.founderFp = r.founderFp;
-  room.epoch = Number(r.epoch) || 1;
-  room.keys[String(room.epoch)] = r.key;
+  room.epoch = epoch;
+  room.keys[String(epoch)] = r.key;
+  for (const k of Object.keys(room.keys)) if (Number(k) < epoch - 1) delete room.keys[k];
   room.members = sanitizeMembers(r.members);
+  room.rosterAt = typeof r.rosterAt === 'string' ? r.rosterAt : nowIso();
   room.updatedAt = nowIso();
   room.left = false;
   await saveRoom(room);
@@ -198,16 +295,18 @@ async function acceptInvite(fromDev, r) {
 }
 
 async function acceptKeyUpdate(fromDev, body) {
+  if (typeof body.roomId !== 'string' || !ROOM_ID.test(body.roomId)) return;
   const room = state.rooms.find((x) => x.id === body.roomId);
   if (!room || room.founderFp !== fromDev.fingerprint) return;
   const epoch = Number(body.epoch);
-  if (!Number.isInteger(epoch) || !(epoch > room.epoch) || epoch > room.epoch + 1000 || typeof body.key !== 'string') return;
-  if (b64url.decode(body.key).length !== 32) return;
+  if (!Number.isInteger(epoch) || !(epoch > room.epoch) || epoch > room.epoch + 1000 || !isKey32(body.key)) return;
+  if (!Array.isArray(body.members)) return;
   room.epoch = epoch;
   room.keys[String(epoch)] = body.key;
-  // forget keys older than two epochs; history already stored is plaintext-sealed locally
+  // forget keys older than two epochs; history already stored is sealed locally
   for (const k of Object.keys(room.keys)) if (Number(k) < epoch - 1) delete room.keys[k];
   room.members = sanitizeMembers(body.members);
+  room.rosterAt = nowIso();
   room.updatedAt = nowIso();
   await saveRoom(room);
   await refreshSubscriptions();
@@ -216,10 +315,11 @@ async function acceptKeyUpdate(fromDev, body) {
 
 function sanitizeMembers(list) {
   const seen = new Set();
-  return list.filter((m) => m && typeof m.fp === 'string' && FP.test(m.fp) && typeof m.signPub === 'string' && !seen.has(m.fp) && seen.add(m.fp))
+  return list.filter((m) => m && typeof m.fp === 'string' && FP.test(m.fp) && isKey33(m.signPub) && !seen.has(m.fp) && seen.add(m.fp))
     .slice(0, MAX_MEMBERS)
-    .map((m) => ({ fp: m.fp, name: cleanName(m.name) || m.fp.slice(0, 8), pub: String(m.pub || '').slice(0, 64), signPub: m.signPub.slice(0, 64) }));
+    .map((m) => ({ fp: m.fp, name: cleanName(m.name) || m.fp.slice(0, 8), pub: String(m.pub || '').slice(0, 64), signPub: m.signPub }));
 }
+function isKey33(b64) { try { return typeof b64 === 'string' && b64url.decode(b64).length === 33; } catch { return false; } }
 
 // founder removes a member: new epoch key, delivered to every remaining member
 // over their pair channel. members the founder is not paired with fall out of
@@ -232,10 +332,12 @@ export async function removeMember(room, fp) {
 }
 
 export async function rotateEpoch(room) {
+  if (room.founderFp !== state.identity.fingerprint) throw new Error('only the founder can rotate the key');
   const key = newRoomKey();
   room.epoch += 1;
   room.keys[String(room.epoch)] = b64url.encode(key);
   for (const k of Object.keys(room.keys)) if (Number(k) < room.epoch - 1) delete room.keys[k];
+  room.rosterAt = nowIso();
   room.updatedAt = nowIso();
   await saveRoom(room);
   await refreshSubscriptions();
@@ -264,14 +366,15 @@ export async function sendRoomMessage(room, kind, body, { keep = true } = {}) {
   if (kind === 'text' && (typeof body.text !== 'string' || !body.text.trim())) throw new Error('nothing to send');
   if (kind === 'text' && body.text.length > MAX_TEXT) throw new Error(`message longer than ${MAX_TEXT} characters`);
   const msg = { id: uuid(), fp: state.identity.fingerprint, ts: nowIso(), kind, ...body };
-  const frame = await sealRoomMessage(await currentKey(room), room.id, room.epoch, state.identity.signKey, msg);
-  const tag = tagsByRoom.get(room.id) || await roomTag(await currentKey(room));
+  const frame = await sealRoomMessage(currentKey(room), room.id, room.epoch, state.identity.signKey, msg);
+  const tag = tagsByRoom.get(room.id) || await roomTag(currentKey(room));
   await publish(tag, JSON.stringify(frame), keep);
   if (kind === 'text' || kind === 'location') {
-    await storeMessage(room.id, msg);
+    const stored = { ...msg, rx: msg.ts };
+    await storeMessage(room.id, stored);
     room.updatedAt = msg.ts;
     await saveRoom(room);
-    emit('room:message', { roomId: room.id, msg, mine: true });
+    emit('room:message', { roomId: room.id, msg: stored, mine: true });
   }
   return msg;
 }
@@ -280,8 +383,9 @@ async function handleRoomFrame(room, text, replay) {
   let frame;
   try { frame = JSON.parse(text); } catch { return; }
   const epoch = Number(frame.e);
+  if (!Number.isInteger(epoch)) return;
   const keyB64 = room.keys[String(epoch)];
-  if (!keyB64) return; // older than we keep, or newer than we were given
+  if (!isKey32(keyB64)) return; // older than we keep, or newer than we were given
   let msg;
   try {
     msg = await openRoomMessage(b64url.decode(keyB64), room.id, epoch, frame, (fp) => {
@@ -290,37 +394,41 @@ async function handleRoomFrame(room, text, replay) {
     });
   } catch { return; }
   if (msg.fp === state.identity.fingerprint) return;
-  const seenKey = `${room.id}:${msg.id}`;
+  if (!UUID.test(msg.id)) return;
+  const seenKey = `room|${room.id}|${msg.id}`;
   if (await db.get('seen', seenKey)) return;
   await db.put('seen', { id: seenKey, t: nowIso() });
   const sender = room.members.find((m) => m.fp === msg.fp);
   switch (msg.kind) {
     case 'text':
-    case 'location':
-      if (msg.kind === 'text' && (typeof msg.text !== 'string' || msg.text.length > MAX_TEXT)) return;
-      if (msg.kind === 'location') {
-        const lat = finiteInRange(msg.lat, -90, 90), lon = finiteInRange(msg.lon, -180, 180);
-        if (lat === null || lon === null) return;
-        msg.lat = lat; msg.lon = lon;
-        msg.acc = finiteInRange(msg.acc, 0, 100_000) ?? 0;
-        msg.live = !!msg.live;
-      }
-      if (typeof msg.ts !== 'string' || Number.isNaN(Date.parse(msg.ts))) msg.ts = nowIso();
-      await storeMessage(room.id, msg);
-      room.updatedAt = msg.ts || nowIso();
+    case 'location': {
+      const clean = normalizeMessage(msg);
+      if (!clean) return;
+      await storeMessage(room.id, clean);
+      room.updatedAt = clean.rx;
       await saveRoom(room);
-      emit('room:message', { roomId: room.id, msg, mine: false, replay, sender });
+      emit('room:message', { roomId: room.id, msg: clean, mine: false, replay, sender });
       break;
-    case 'roster':
+    }
+    case 'roster': {
       if (msg.fp !== room.founderFp || !Array.isArray(msg.members)) return;
+      // rosters carry the founder's clock; an older one replayed by the relay is ignored
+      if (typeof msg.at !== 'string' || (room.rosterAt && msg.at <= room.rosterAt)) return;
       room.members = sanitizeMembers(msg.members);
+      room.rosterAt = msg.at;
       await saveRoom(room);
       emit('rooms:changed', { roomId: room.id, reason: 'roster' });
       break;
+    }
     case 'leave':
       room.members = room.members.filter((m) => m.fp !== msg.fp);
       await saveRoom(room);
       emit('rooms:changed', { roomId: room.id, reason: 'left', who: sender });
+      // a departed member keeps the old key; the founder issues a fresh one so
+      // "left" means "cannot read anything further"
+      if (room.founderFp === state.identity.fingerprint && !replay) {
+        rotateEpoch(room).then(() => emit('rooms:changed', { roomId: room.id, reason: 'rotated' })).catch(() => {});
+      }
       break;
     case 'call':
       if (!replay) emit('room:call', { roomId: room.id, msg, sender });
@@ -354,8 +462,20 @@ export function roomPeerCount(room) {
   return tag ? beacon.counts.get(tag) || 0 : 0;
 }
 
+export function devicePeerCount(dev) {
+  const tag = tagsByDevice.get(dev.id);
+  return tag ? beacon.counts.get(tag) || 0 : 0;
+}
+
 export function memberName(room, fp) {
   if (fp === state.identity.fingerprint) return state.profile.name;
   const m = room.members.find((x) => x.fp === fp);
   return m ? m.name : `unknown ${fp.slice(0, 6)}`;
+}
+
+// the send side of a call for either conversation kind
+export function callTransport(conv) {
+  if (conv.room) return (body) => sendRoomMessage(conv.room, 'call', body, { keep: false });
+  if (conv.dev) return (body) => sendDirect(conv.dev, { kind: 'call', ...body }, false).then(() => undefined);
+  throw new Error('no conversation');
 }

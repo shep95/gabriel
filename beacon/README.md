@@ -67,6 +67,15 @@ The install page at `http://<beacon-ip>:8080/` walks through it per OS:
 - Windows: `/ca.der` → `certmgr.msc` → Trusted Root Certification Authorities → Import.
 - Linux and Firefox: import `/ca.pem` under Settings → Certificates (Authorities).
 
+A trusted root can vouch for any name, so anyone holding `beacon-data/ca.key`
+could impersonate other https sites to devices that installed it. The install
+page says so and shows how to remove it; keep the data directory on the
+operator's machine only, and tell people to remove the certificate when the
+deployment ends. The CA expires after five years. Wrong-password attempts are
+counted per address and an address that fails five times a minute is refused
+at the websocket upgrade for a minute; replay buffers share a 64 MiB cap with
+least-recently-used eviction; each address may hold 64 connections.
+
 Everything else requested over http redirects to the https URL. The https
 server deliberately does not send `Strict-Transport-Security`: HSTS applies per
 host across all ports, so it would make a browser refuse this same address's

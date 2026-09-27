@@ -15,6 +15,9 @@ in its loopback dev mode (`node beacon/server.mjs --dev-http`), which serves
   over the pair channel, exchanges messages, checks the shield blur is applied
 - shares a location once and reads it back with bearing on the other device
 - joins a real webrtc call from both devices and waits for `connected`
+- sends a message containing markup and proves it renders as text
+- opens a direct chat from the devices list, messages both ways, and connects a
+  one-to-one call
 - removes a member, rotates the key, and proves the removed member sees nothing new
 - asserts that no request ever left the origin
 

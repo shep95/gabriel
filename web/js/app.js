@@ -18,7 +18,8 @@ import { state, DEFAULT_SETTINGS, resetUnlockedState, on } from './state.js';
 import { beacon, connectBeacon, disconnectBeacon, normalizeBeaconUrl } from './beacon.js';
 import {
   loadRooms, createRoom, inviteDevice, removeMember, rotateEpoch, leaveRoom, deleteRoom,
-  loadMessages, sendRoomMessage, refreshSubscriptions, roomPeerCount, memberName,
+  loadMessages, sendRoomMessage, sendDirectMessage, refreshSubscriptions, roomPeerCount, devicePeerCount,
+  memberName, dmId, deviceForDm, callTransport, deleteConversationMessages,
 } from './rooms.js';
 import { call, joinCall, leaveCall, toggleMute, toggleVideo, snapshot as callSnapshot, resumeAudio } from './calls.js';
 import { notificationSupport, requestNotifications, notifyIncoming, clearNotifications } from './notify.js';
@@ -39,7 +40,14 @@ function armIdleLock() {
   if (!state.vaultKey || mins <= 0) return;
   state.lockTimer = setTimeout(() => { lock('locked after inactivity'); }, mins * 60 * 1000);
 }
-for (const ev of ['pointerdown', 'keydown', 'touchstart']) document.addEventListener(ev, armIdleLock, { passive: true });
+let lastActivity = Date.now();
+for (const ev of ['pointerdown', 'keydown', 'touchstart']) document.addEventListener(ev, () => { lastActivity = Date.now(); armIdleLock(); }, { passive: true });
+// a backgrounded tab's timers are throttled; on return, measure the real gap
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden || !state.vaultKey) return;
+  const mins = Number(state.settings.autoLockMinutes) || 0;
+  if (mins > 0 && Date.now() - lastActivity > mins * 60_000 && !call.roomId) lock('locked after inactivity');
+});
 
 function lock(reason) {
   stopLiveShare();
@@ -49,6 +57,13 @@ function lock(reason) {
   clearTimeout(state.lockTimer);
   stopActiveScanner();
   stopFrameCycle();
+  stopCompass();
+  clearNotifications().catch(() => {});
+  myPos = null;
+  pairing = null;
+  inbox.tid = null; inbox.total = 0; inbox.parts.clear();
+  state.settings = { ...DEFAULT_SETTINGS, autoLockMinutes: state.settings.autoLockMinutes };
+  applyShieldClass();
   $('#lock-btn').hidden = true;
   $('#who').textContent = '';
   if (location.hash) history.replaceState(null, '', location.pathname);
@@ -61,12 +76,40 @@ $('#lock-btn').addEventListener('click', () => lock());
 
 async function loadProfile() {
   state.profile = (await db.get('meta', 'profile')) || null;
-  const s = await db.get('meta', 'settings');
-  state.settings = { ...DEFAULT_SETTINGS, ...(s ? s.value : {}) };
+  // settings are sealed with everything else; until unlock the defaults apply
+  state.settings = { ...DEFAULT_SETTINGS };
+  applyShieldClass();
+}
+
+function coerceSettings(v) {
+  const o = { ...DEFAULT_SETTINGS };
+  if (!v || typeof v !== 'object') return o;
+  o.autoLockMinutes = Math.max(0, Math.min(240, Number(v.autoLockMinutes) || 0));
+  o.shield = v.shield !== false;
+  o.notifications = ['off', 'sender', 'silent'].includes(v.notifications) ? v.notifications : 'sender';
+  o.tiles = ['none', 'beacon', 'osm'].includes(v.tiles) ? v.tiles : 'none';
+  o.beaconUrl = String(v.beaconUrl || '').slice(0, 300);
+  o.beaconPassword = String(v.beaconPassword || '').slice(0, 200);
+  o.beaconAuto = !!v.beaconAuto;
+  o.iceServers = String(v.iceServers || '').slice(0, 2000);
+  return o;
+}
+
+async function loadSettingsUnlocked() {
+  const rec = await db.get('meta', 'settings');
+  if (!rec) return;
+  if (rec.enc) {
+    try { state.settings = coerceSettings(await openRecord(state.vaultKey, 'meta', 'settings', rec.enc)); } catch { /* keep defaults */ }
+  } else if (rec.value) {
+    // migrate a plaintext settings record from an earlier build
+    state.settings = coerceSettings(rec.value);
+    await saveSettings();
+  }
   applyShieldClass();
 }
 
 async function loadUnlockedData() {
+  await loadSettingsUnlocked();
   const idRec = await db.get('meta', 'identity');
   if (!idRec) throw new Error('identity record missing');
   const priv = await openRecord(state.vaultKey, 'meta', 'identity', idRec.enc);
@@ -118,7 +161,8 @@ async function saveNote(note) {
 }
 
 async function saveSettings() {
-  await db.put('meta', { id: 'settings', value: state.settings });
+  if (!state.vaultKey) return;
+  await db.put('meta', { id: 'settings', enc: await sealRecord(state.vaultKey, 'meta', 'settings', state.settings) });
   applyShieldClass();
 }
 
@@ -174,7 +218,7 @@ function renderCreate() {
       const profile = { id: 'profile', name, createdAt: nowIso(), kdf: v.kdf, wrap: v.wrap, version: 1 };
       await db.put('meta', profile);
       await db.put('meta', { id: 'identity', pub: b64url.encode(idn.pub), signPub: b64url.encode(idn.signPub), fingerprint: idn.fingerprint, enc });
-      await db.put('meta', { id: 'settings', value: state.settings });
+      await db.put('meta', { id: 'settings', enc: await sealRecord(v.vaultKey, 'meta', 'settings', state.settings) });
       await db.requestPersistence();
       state.profile = profile;
       state.vaultKey = v.vaultKey;
@@ -398,7 +442,7 @@ function renderDeviceList() {
   list.innerHTML = state.devices.map((d) => `
     <div class="item-row ${d.verified ? 'trust' : ''}" data-id="${d.id}">
       <div class="t"><div class="name">${escapeHtml(d.name)}</div><p class="sub mono" title="${escapeHtml(d.fingerprint)}">${fingerprintPretty(d.fingerprint)}</p><p class="sub">paired ${relativeTime(d.pairedAt)}${d.lastTransferAt ? ` · last transfer ${relativeTime(d.lastTransferAt)}` : ''}${d.signPub ? '' : ' · older code: cannot join rooms until re-paired'}</p></div>
-      <div class="a"><button class="small ghost" data-act="rename">rename</button><button class="small danger" data-act="forget">forget</button></div>
+      <div class="a"><button class="small accent" data-act="message">message</button><button class="small ghost" data-act="rename">rename</button><button class="small danger" data-act="forget">forget</button></div>
     </div>`).join('');
   list.onclick = async (e) => {
     const btn = e.target.closest('button[data-act]');
@@ -406,10 +450,13 @@ function renderDeviceList() {
     const row = e.target.closest('.item-row');
     const dev = state.devices.find((d) => d.id === row.dataset.id);
     if (!dev) return;
-    if (btn.dataset.act === 'forget') {
+    if (btn.dataset.act === 'message') {
+      location.hash = `#/rooms/${dmId(dev)}`;
+    } else if (btn.dataset.act === 'forget') {
       const ok = await confirmDialog({ title: `forget ${dev.name}`, body: 'the shared key is deleted here. the other device keeps its copy until it forgets you too. rooms you share stay, but this device can no longer be reached directly.', okLabel: 'forget', danger: true });
       if (!ok) return;
       await db.del('devices', dev.id);
+      await deleteConversationMessages(dmId(dev));
       state.devices = state.devices.filter((d) => d.id !== dev.id);
       await refreshSubscriptions();
       renderDeviceList();
@@ -475,7 +522,7 @@ async function acceptTheirInvite(text, el, fromScanner = false) {
   pairing.theirs = theirs;
   renderTheirState();
   try {
-    pairing.derived = await derivePair(state.identity.privateKey, pairing.myInvite.nonce, theirs.pub, theirs.nonce);
+    pairing.derived = await derivePair(state.identity.privateKey, pairing.myInvite, theirs);
   } catch (e) { toast(`key agreement failed: ${e.message}`, 'error'); return; }
   renderSas(el);
 }
@@ -543,10 +590,18 @@ function viewRooms(el) {
       <div class="row between"><div><h2>rooms</h2><div class="sub">group conversations and calls, sealed end to end, carried by a beacon on the local network.</div></div><button class="primary" id="room-new">new room</button></div>
       ${beacon.status === 'on' ? '' : `<div class="card" style="margin-bottom:1rem"><p>no beacon connected. rooms still open and keep their history; sending needs a beacon. <a href="#/privacy">set one up</a>.</p></div>`}
       <div class="list" id="room-list">${rooms.length ? rooms.map((r) => `
-        <div class="item-row" data-id="${r.id}">
+        <div class="item-row" data-id="${escapeHtml(r.id)}">
           <div class="t"><div class="name">${escapeHtml(r.name)}</div><p class="sub">${r.members.length} member${r.members.length === 1 ? '' : 's'} · ${roomPeerCount(r)} here now · ${r.founderFp === state.identity.fingerprint ? 'you founded it' : `founded by ${escapeHtml(memberName(r, r.founderFp))}`} · ${relativeTime(r.updatedAt)}</p></div>
-          <div class="a"><a href="#/rooms/${r.id}"><button class="small">open</button></a></div>
+          <div class="a"><a href="#/rooms/${escapeHtml(r.id)}"><button class="small">open</button></a></div>
         </div>`).join('') : '<div class="empty">no rooms yet. found one and add people you have paired with.</div>'}</div>
+      <div class="divider"></div>
+      <h3>one to one</h3>
+      <div class="sub" style="margin-bottom:.8rem">a direct chat rides the pair channel itself: only the two devices hold the key.</div>
+      <div class="list">${state.devices.length ? state.devices.map((d) => `
+        <div class="item-row" data-id="${escapeHtml(d.id)}">
+          <div class="t"><div class="name">${escapeHtml(d.name)}</div><p class="sub">${devicePeerCount(d) > 1 ? 'here now' : 'not on this beacon'}${d.lastTransferAt ? ` · last ${relativeTime(d.lastTransferAt)}` : ''}</p></div>
+          <div class="a"><a href="#/rooms/${dmId(d)}"><button class="small">open</button></a></div>
+        </div>`).join('') : '<div class="empty">pair a device to message it directly.</div>'}</div>
       <p class="locked-note">a room can only contain devices the founder has paired with in person. that is the whole membership system: no accounts, no invites by link.</p>
     </section>`;
   $('#room-new').onclick = async () => {
@@ -563,101 +618,130 @@ function stopLiveShare() { if (liveShareStop) { liveShareStop(); liveShareStop =
 
 let myPos = null; // last position this device read for itself, memory only
 
-async function viewRoom(el, roomId) {
-  const room = state.rooms.find((r) => r.id === roomId);
-  if (!room) { location.hash = '#/rooms'; return; }
-  currentRoomId = roomId;
-  clearNotifications(`#/rooms/${roomId}`);
-  const founder = room.founderFp === state.identity.fingerprint;
+// a conversation is a room or a direct chat; both render the same way
+function getConv(convId) {
+  if (convId.startsWith('dm:')) {
+    const dev = deviceForDm(convId);
+    if (!dev) return null;
+    return {
+      id: convId, dev, room: null, name: dev.name, isRoom: false,
+      nameOf: (fp) => (fp === state.identity.fingerprint ? state.profile.name : dev.name),
+      peers: () => devicePeerCount(dev),
+      send: (kind, body, opts) => sendDirectMessage(dev, kind, body, opts),
+      members: () => `${dev.name}, you`,
+    };
+  }
+  const room = state.rooms.find((r) => r.id === convId);
+  if (!room) return null;
+  return {
+    id: convId, dev: null, room, name: room.name, isRoom: true,
+    nameOf: (fp) => memberName(room, fp),
+    peers: () => roomPeerCount(room),
+    send: (kind, body, opts) => sendRoomMessage(room, kind, body, opts),
+    members: () => room.members.map((m) => (m.fp === state.identity.fingerprint ? 'you' : m.name)).join(', '),
+  };
+}
+
+async function viewRoom(el, convId) {
+  const conv = getConv(convId);
+  if (!conv) { location.hash = '#/rooms'; return; }
+  currentRoomId = convId;
+  clearNotifications(`#/rooms/${convId}`);
+  const founder = conv.isRoom && conv.room.founderFp === state.identity.fingerprint;
+  const inThisCall = call.roomId === convId;
   el.innerHTML = `
     <section>
       <div class="roomhead">
-        <div><h2>${escapeHtml(room.name)}</h2><div class="members" id="room-members"></div></div>
+        <div><h2>${escapeHtml(conv.name)}</h2><div class="members" id="room-members"></div></div>
         <div class="row">
-          <button class="small ghost" id="room-people">people</button>
+          ${conv.isRoom ? '<button class="small ghost" id="room-people">people</button>' : ''}
           <button class="small ghost" id="room-where">where</button>
-          <button class="small ${call.roomId === roomId ? 'danger' : 'accent'}" id="room-call">${call.roomId === roomId ? 'leave call' : 'call'}</button>
+          <button class="small ${inThisCall ? 'danger' : 'accent'}" id="room-call">${inThisCall ? 'leave call' : 'call'}</button>
         </div>
       </div>
       <div id="call-panel"></div>
       <div class="shield-hint">shielded: press and hold a message to read it. it blurs again when you let go.</div>
       <div class="timeline" id="timeline"></div>
       <div class="composer">
-        <textarea id="compose" rows="1" placeholder="${beacon.status === 'on' ? 'message the room' : 'connect a beacon to send'}" maxlength="4000"></textarea>
+        <textarea id="compose" rows="1" placeholder="${beacon.status === 'on' ? (conv.isRoom ? 'message the room' : `message ${escapeHtml(conv.name)}`) : 'connect a beacon to send'}" maxlength="4000"></textarea>
         <button class="primary" id="send">send</button>
       </div>
     </section>`;
-  paintMembers(room);
+  paintMembers(conv);
   const tl = $('#timeline');
-  const msgs = await loadMessages(roomId);
-  tl.innerHTML = msgs.map((m) => bubble(room, m)).join('') || '<div class="sysline">nothing yet</div>';
+  const msgs = await loadMessages(convId);
+  tl.innerHTML = msgs.map((m) => bubble(conv, m)).join('') || '<div class="sysline">nothing yet</div>';
   tl.scrollTop = tl.scrollHeight;
   const compose = $('#compose');
   const doSend = async () => {
     const text = compose.value.trim();
     if (!text) return;
     try {
-      await sendRoomMessage(room, 'text', { text });
+      await conv.send('text', { text });
       compose.value = ''; compose.style.height = '';
     } catch (e) { toast(e.message, 'error'); }
   };
   $('#send').onclick = doSend;
   compose.addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); doSend(); } });
   compose.addEventListener('input', () => { compose.style.height = 'auto'; compose.style.height = `${Math.min(compose.scrollHeight, 160)}px`; });
-  $('#room-people').onclick = () => peopleSheet(room, founder);
-  $('#room-where').onclick = () => whereSheet(room);
+  const people = $('#room-people');
+  if (people) people.onclick = () => peopleSheet(conv.room, founder);
+  $('#room-where').onclick = () => whereSheet(conv);
   $('#room-call').onclick = async () => {
-    if (call.roomId === roomId) { await leaveCall(); return; }
-    if (call.roomId) return toast('already in a call in another room', 'error');
-    try { await joinCall(room); toast('in the call: your microphone is live', 'ok'); }
+    if (call.roomId === convId) { await leaveCall(); return; }
+    if (call.roomId) return toast('already in a call in another conversation', 'error');
+    try { await joinCall({ id: convId, send: callTransport(conv) }); toast('in the call: your microphone is live', 'ok'); }
     catch (e) { toast(`call: ${e.message}`, 'error'); }
   };
   paintCallPanel();
 }
 
-function bubble(room, m) {
+function bubble(conv, m) {
   const mine = m.fp === state.identity.fingerprint;
-  const who = mine ? 'you' : memberName(room, m.fp);
+  const who = mine ? 'you' : conv.nameOf(m.fp);
   const when = new Date(m.ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  const id = escapeHtml(String(m.id));
   if (m.kind === 'location') {
-    const rel = myPos ? `${fmtDistance(distanceM(myPos, m))} ${compassPoint(bearingDeg(myPos, m))} of you` : `±${m.acc || '?'} m`;
-    return `<div class="bubble loc ${mine ? 'mine' : ''}" data-id="${m.id}"><div class="who">${escapeHtml(who)} · location${m.live ? ' · live' : ''}</div><div class="txt" data-shielded>${Number(m.lat).toFixed(5)}, ${Number(m.lon).toFixed(5)}<br>${escapeHtml(rel)}</div><div class="when">${when}</div></div>`;
+    const rel = myPos ? `${fmtDistance(distanceM(myPos, m))} ${compassPoint(bearingDeg(myPos, m))} of you` : `±${Number(m.acc) || '?'} m`;
+    return `<div class="bubble loc ${mine ? 'mine' : ''}" data-id="${id}"><div class="who ${mine ? 'me' : ''}">${escapeHtml(who)} · location${m.live ? ' · live' : ''}</div><div class="txt" data-shielded>${Number(m.lat).toFixed(5)}, ${Number(m.lon).toFixed(5)}<br>${escapeHtml(rel)}</div><div class="when">${when}</div></div>`;
   }
-  return `<div class="bubble ${mine ? 'mine' : ''}" data-id="${m.id}"><div class="who">${escapeHtml(who)}</div><div class="txt" data-shielded>${escapeHtml(m.text || '')}</div><div class="when">${when}</div></div>`;
+  return `<div class="bubble ${mine ? 'mine' : ''}" data-id="${id}"><div class="who ${mine ? 'me' : ''}">${escapeHtml(who)}</div><div class="txt" data-shielded>${escapeHtml(m.text || '')}</div><div class="when">${when}</div></div>`;
 }
 
-function paintMembers(room) {
+function paintMembers(conv) {
   const el = $('#room-members');
   if (!el) return;
-  el.textContent = `${room.members.map((m) => (m.fp === state.identity.fingerprint ? 'you' : m.name)).join(', ')} · ${roomPeerCount(room)} here now`;
+  el.textContent = `${conv.members()} · ${conv.peers()} here now`;
 }
 
 on('room:message', ({ roomId, msg, mine, replay, sender }) => {
-  const room = state.rooms.find((r) => r.id === roomId);
-  if (!room) return;
+  const conv = getConv(roomId);
+  if (!conv) return;
   if (roomId === currentRoomId) {
     const tl = $('#timeline');
     if (tl) {
       if (tl.querySelector('.sysline')) tl.innerHTML = '';
       const atBottom = tl.scrollHeight - tl.scrollTop - tl.clientHeight < 80;
-      tl.insertAdjacentHTML('beforeend', bubble(room, msg));
+      tl.insertAdjacentHTML('beforeend', bubble(conv, msg));
       if (atBottom || mine) tl.scrollTop = tl.scrollHeight;
     }
+  } else if (state.route === 'rooms' && !currentRoomId) {
+    route();
   }
-  if (!mine && !replay) notifyIncoming({ senderName: sender ? sender.name : 'someone', roomName: room.name, route: `#/rooms/${roomId}` });
+  if (!mine && !replay) notifyIncoming({ senderName: sender ? sender.name : 'someone', route: `#/rooms/${roomId}` });
 });
 on('rooms:changed', ({ roomId, reason, who }) => {
-  const room = state.rooms.find((r) => r.id === roomId);
+  const conv = getConv(roomId);
   if (state.route === 'rooms' && !currentRoomId) route();
-  if (roomId === currentRoomId && room) {
-    paintMembers(room);
+  if (roomId === currentRoomId && conv) {
+    paintMembers(conv);
     const tl = $('#timeline');
     if (tl && reason === 'left' && who) tl.insertAdjacentHTML('beforeend', `<div class="sysline">${escapeHtml(who.name)} left</div>`);
     if (tl && reason === 'rotated') tl.insertAdjacentHTML('beforeend', '<div class="sysline">the room key was rotated</div>');
   }
-  if (reason === 'invited' && room) toast(`added to ${room.name}`, 'ok');
+  if (reason === 'invited' && conv) toast(`added to ${conv.name}`, 'ok');
 });
-on('beacon:count', () => { const room = state.rooms.find((r) => r.id === currentRoomId); if (room) paintMembers(room); });
+on('beacon:count', () => { const conv = currentRoomId ? getConv(currentRoomId) : null; if (conv) paintMembers(conv); });
 
 async function peopleSheet(room, founder) {
   const candidates = state.devices.filter((d) => d.signPub && !room.members.some((m) => m.fp === d.fingerprint));
@@ -665,8 +749,8 @@ async function peopleSheet(room, founder) {
     <div class="row between"><h3>people in ${escapeHtml(room.name)}</h3><button class="ghost small" id="pp-close">close</button></div>
     <div class="list" style="margin-top:1rem">${room.members.map((m) => `
       <div class="item-row"><div class="t"><div class="name">${m.fp === state.identity.fingerprint ? 'you' : escapeHtml(m.name)}</div><p class="sub mono">${fingerprintPretty(m.fp)}</p></div>
-      ${founder && m.fp !== state.identity.fingerprint ? `<div class="a"><button class="small danger" data-remove="${m.fp}">remove</button></div>` : ''}</div>`).join('')}</div>
-    ${founder ? `<div class="divider"></div><h3>add a paired device</h3>${candidates.length ? `<div class="list" style="margin-top:.8rem">${candidates.map((d) => `<div class="item-row"><div class="t"><div class="name">${escapeHtml(d.name)}</div></div><div class="a"><button class="small accent" data-add="${d.id}">add</button></div></div>`).join('')}</div>` : '<p style="color:var(--muted);margin-top:.6rem">everyone you are paired with is already here, or paired with an older code.</p>'}
+      ${founder && m.fp !== state.identity.fingerprint ? `<div class="a"><button class="small danger" data-remove="${escapeHtml(m.fp)}">remove</button></div>` : ''}</div>`).join('')}</div>
+    ${founder ? `<div class="divider"></div><h3>add a paired device</h3>${candidates.length ? `<div class="list" style="margin-top:.8rem">${candidates.map((d) => `<div class="item-row"><div class="t"><div class="name">${escapeHtml(d.name)}</div></div><div class="a"><button class="small accent" data-add="${escapeHtml(d.id)}">add</button></div></div>`).join('')}</div>` : '<p style="color:var(--muted);margin-top:.6rem">everyone you are paired with is already here, or paired with an older code.</p>'}
       <div class="divider"></div><div class="row"><button class="small" id="pp-rotate">rotate key now</button><span class="hint" style="color:var(--dim)">issue a fresh epoch key to current members</span></div>` : ''}
     <div class="divider"></div>
     <div class="row"><button class="small danger" id="pp-leave">${founder ? 'delete room here' : 'leave room'}</button></div>`);
@@ -675,12 +759,12 @@ async function peopleSheet(room, founder) {
     const add = e.target.closest('[data-add]'); const rem = e.target.closest('[data-remove]');
     if (add) {
       const dev = state.devices.find((d) => d.id === add.dataset.add);
-      try { await inviteDevice(room, dev); toast(`${dev.name} added`, 'ok'); closeOverlay(); paintMembers(room); }
+      try { await inviteDevice(room, dev); toast(`${dev.name} added`, 'ok'); closeOverlay(); paintMembers(getConv(room.id)); }
       catch (err) { toast(err.message, 'error'); }
     } else if (rem) {
       const ok = await confirmDialog({ title: 'remove from room', body: 'they stop receiving new messages; the room key is rotated for everyone else.', okLabel: 'remove', danger: true });
       if (!ok) return;
-      try { const failed = await removeMember(room, rem.dataset.remove); toast(failed.length ? `removed; could not reach ${failed.join(', ')} with the new key` : 'removed and key rotated', failed.length ? 'error' : 'ok'); closeOverlay(); paintMembers(room); }
+      try { const failed = await removeMember(room, rem.dataset.remove); toast(failed.length ? `removed; could not reach ${failed.join(', ')} with the new key` : 'removed and key rotated', failed.length ? 'error' : 'ok'); closeOverlay(); paintMembers(getConv(room.id)); }
       catch (err) { toast(err.message, 'error'); }
     }
   };
@@ -699,16 +783,16 @@ async function peopleSheet(room, founder) {
 
 // ---------- location ----------
 
-async function whereSheet(room) {
-  const msgs = (await loadMessages(room.id)).filter((m) => m.kind === 'location');
+async function whereSheet(conv) {
+  const msgs = (await loadMessages(conv.id)).filter((m) => m.kind === 'location');
   const latest = new Map();
   for (const m of msgs) if (m.fp !== state.identity.fingerprint) latest.set(m.fp, m);
-  const points = Array.from(latest.values()).map((m) => ({ ...m, lat: Number(m.lat), lon: Number(m.lon), label: memberName(room, m.fp), stale: Date.now() - new Date(m.ts).getTime() > 15 * 60 * 1000 })).filter((p) => Number.isFinite(p.lat) && Number.isFinite(p.lon));
+  const points = Array.from(latest.values()).map((m) => ({ ...m, lat: Number(m.lat), lon: Number(m.lon), label: conv.nameOf(m.fp), stale: Date.now() - new Date(m.rx || m.ts).getTime() > 15 * 60 * 1000 })).filter((p) => Number.isFinite(p.lat) && Number.isFinite(p.lon));
   const src = tileSource();
   const box = openOverlay(`
     <div class="row between"><h3>where</h3><button class="ghost small" id="wh-close">close</button></div>
-    <p style="margin-top:.6rem;color:var(--muted);font-size:.9rem">nothing is read from this device's location until you tap share. what you share goes sealed to this room only.</p>
-    <div class="row" style="margin-top:.8rem"><button class="accent small" id="wh-share">share where i am once</button><button class="small ${liveShareRoomId === room.id ? 'danger' : ''}" id="wh-live">${liveShareRoomId === room.id ? 'stop live sharing' : 'share live (every 20 s)'}</button><button class="small ghost" id="wh-locate">locate me for the radar</button></div>
+    <p style="margin-top:.6rem;color:var(--muted);font-size:.9rem">nothing is read from this device's location until you tap share. what you share goes sealed to ${conv.isRoom ? 'this room' : escapeHtml(conv.name)} only.</p>
+    <div class="row" style="margin-top:.8rem"><button class="accent small" id="wh-share">share where i am once</button><button class="small ${liveShareRoomId === conv.id ? 'danger' : ''}" id="wh-live">${liveShareRoomId === conv.id ? 'stop live sharing' : 'share live (every 20 s)'}</button><button class="small ghost" id="wh-locate">locate me for the radar</button></div>
     <div id="wh-status" class="hint" style="color:var(--dim);margin-top:.6rem"></div>
     <div class="radar"><canvas id="radar" width="320" height="320"></canvas></div>
     <div id="wh-list" class="list"></div>
@@ -720,7 +804,7 @@ async function whereSheet(room) {
   const paint = () => {
     if (myPos) drawRadar(canvas, myPos, points, heading);
     else { const ctx = canvas.getContext('2d'); ctx.clearRect(0, 0, canvas.width, canvas.height); }
-    $('#wh-list', box).innerHTML = points.length ? points.map((p) => `<div class="item-row"><div class="t"><div class="name">${escapeHtml(p.label)}${p.stale ? ' <span style="color:var(--dim)">(old)</span>' : ''}</div><p class="sub">${myPos ? `${fmtDistance(distanceM(myPos, p))} · bearing ${Math.round(bearingDeg(myPos, p))}° ${compassPoint(bearingDeg(myPos, p))}` : `${p.lat.toFixed(5)}, ${p.lon.toFixed(5)}`} · ±${p.acc || '?'} m · ${relativeTime(p.ts)}</p><p class="sub">${externalMapLinks(p).map((l) => `<a href="${escapeHtml(l.href)}" target="_blank" rel="noopener noreferrer">${l.label}</a>`).join(' · ')}</p></div></div>`).join('') : '<div class="empty">nobody in this room has shared a location yet.</div>';
+    $('#wh-list', box).innerHTML = points.length ? points.map((p) => `<div class="item-row"><div class="t"><div class="name">${escapeHtml(p.label)}${p.stale ? ' <span style="color:var(--dim)">(old)</span>' : ''}</div><p class="sub">${myPos ? `${fmtDistance(distanceM(myPos, p))} · bearing ${Math.round(bearingDeg(myPos, p))}° ${compassPoint(bearingDeg(myPos, p))}` : `${p.lat.toFixed(5)}, ${p.lon.toFixed(5)}`} · ±${Number(p.acc) || '?'} m · ${relativeTime(p.rx || p.ts)}</p><p class="sub">${externalMapLinks(p).map((l) => `<a href="${escapeHtml(l.href)}" target="_blank" rel="noopener noreferrer">${l.label}</a>`).join(' · ')}</p></div></div>`).join('') : '<div class="empty">nobody here has shared a location yet.</div>';
   };
   paint();
   if (src) renderMap($('#wh-map', box), myPos, points).catch((e) => toast(`map: ${e.message}`, 'error'));
@@ -738,22 +822,22 @@ async function whereSheet(room) {
     status('reading position…');
     try {
       myPos = await currentPosition();
-      await sendRoomMessage(room, 'location', { lat: myPos.lat, lon: myPos.lon, acc: myPos.acc, live: false });
-      status('shared once with this room');
+      await conv.send('location', { lat: myPos.lat, lon: myPos.lon, acc: myPos.acc, live: false });
+      status('shared once');
       paint();
     } catch (e) { status(e.message); }
   };
   $('#wh-live', box).onclick = async () => {
     const b = $('#wh-live', box);
-    if (liveShareRoomId === room.id) { stopLiveShare(); status('live sharing stopped'); b.textContent = 'share live (every 20 s)'; b.classList.remove('danger'); return; }
+    if (liveShareRoomId === conv.id) { stopLiveShare(); status('live sharing stopped'); b.textContent = 'share live (every 20 s)'; b.classList.remove('danger'); return; }
     stopLiveShare();
     try {
       liveShareStop = watchPosition(async (p) => {
         myPos = p;
-        try { await sendRoomMessage(room, 'location', { lat: p.lat, lon: p.lon, acc: p.acc, live: true }); } catch { /* beacon gone; keep watching */ }
+        try { await conv.send('location', { lat: p.lat, lon: p.lon, acc: p.acc, live: true }); } catch { /* beacon gone; keep watching */ }
       }, { minIntervalMs: 20000 });
-      liveShareRoomId = room.id;
-      status('live: this room gets your position every 20 s until you stop or lock');
+      liveShareRoomId = conv.id;
+      status('live: your position goes out every 20 s until you stop or lock');
       b.textContent = 'stop live sharing'; b.classList.add('danger');
     } catch (e) { status(e.message); }
   };
@@ -768,12 +852,12 @@ function paintCallPanel() {
   const btn = $('#room-call');
   if (btn) { btn.textContent = s.active && s.roomId === currentRoomId ? 'leave call' : 'call'; btn.className = `small ${s.active && s.roomId === currentRoomId ? 'danger' : 'accent'}`; }
   if (!s.active || s.roomId !== currentRoomId) { panel.innerHTML = ''; return; }
-  const room = state.rooms.find((r) => r.id === s.roomId);
+  const conv = getConv(s.roomId);
   const mins = Math.floor((Date.now() - s.since) / 60000);
   panel.innerHTML = `
     <div class="callpanel">
       <div class="row between"><div><span class="pulse"></span>in the call · ${mins} min · peer to peer on this network</div><div class="row"><button class="small ${s.muted ? 'accent' : ''}" id="c-mute">${s.muted ? 'unmute' : 'mute'}</button><button class="small ${s.video ? 'accent' : ''}" id="c-video">${s.video ? 'camera off' : 'camera'}</button><button class="small ghost" id="c-audio">sound</button></div></div>
-      <div class="who">${s.peers.length ? s.peers.map((p) => `<span class="${p.state === 'connected' ? 'on' : p.state === 'failed' ? 'off' : ''}">${escapeHtml(memberName(room, p.fp))} · ${p.state}</span>`).join('') : '<span>waiting for others to join</span>'}</div>
+      <div class="who">${s.peers.length ? s.peers.map((p) => `<span class="${p.state === 'connected' ? 'on' : p.state === 'failed' ? 'off' : ''}">${escapeHtml(conv ? conv.nameOf(p.fp) : p.fp.slice(0, 8))} · ${p.state}</span>`).join('') : '<span>waiting for others to join</span>'}</div>
       <div class="videos" id="c-videos"></div>
       <p class="hint" style="color:var(--dim);font-size:.78rem;margin:0">audio and video go straight between phones, encrypted, never through the beacon. if a peer stays at "connecting", this wi-fi isolates its clients; chat still works.</p>
     </div>`;

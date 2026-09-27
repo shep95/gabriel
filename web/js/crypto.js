@@ -248,15 +248,22 @@ export async function parseInvite(text) {
   }
   const nonce = bytes.slice(at, at + 8);
   const name = cleanName(utf8.decode(bytes.slice(at + 8)), 24) || 'unnamed device';
-  return { pub, signPub, nonce, name, fingerprint: await fingerprintOf(pub), version };
+  // the canonical text is what the key agreement binds: prefix, dash, base32
+  const canonical = `${INVITE_PREFIX}-${b32.encode(bytes)}`;
+  return { pub, signPub, nonce, name, text: canonical, fingerprint: await fingerprintOf(pub), version };
 }
 
-// both sides compute identical results regardless of who invited whom,
-// because salt orders the two nonces and the pair key is symmetric.
-export async function derivePair(myPrivateKey, myNonce, theirPub33, theirNonce) {
-  const theirKey = await importPublic(theirPub33);
+// both sides compute identical results regardless of who invited whom: the
+// salt orders the two nonces and appends a hash of both complete invites, so
+// the six digits also cover the signing keys and names. an intermediary who
+// relays the codes and swaps a signing key changes the digits on one side.
+export async function derivePair(myPrivateKey, mine, theirs) {
+  const theirKey = await importPublic(theirs.pub);
   const shared = new Uint8Array(await subtle.deriveBits({ name: 'ECDH', public: theirKey }, myPrivateKey, 256));
-  const salt = compareBytes(myNonce, theirNonce) <= 0 ? concat(myNonce, theirNonce) : concat(theirNonce, myNonce);
+  const a = utf8.encode(mine.text), b = utf8.encode(theirs.text);
+  const transcript = new Uint8Array(await subtle.digest('SHA-256', compareBytes(a, b) <= 0 ? concat(a, b) : concat(b, a)));
+  const nonces = compareBytes(mine.nonce, theirs.nonce) <= 0 ? concat(mine.nonce, theirs.nonce) : concat(theirs.nonce, mine.nonce);
+  const salt = concat(nonces, transcript);
   const pairKey = await hkdf(shared, salt, PROTO_PAIR, 32);
   const sasBytes = await hkdf(shared, salt, PROTO_SAS, 32);
   shared.fill(0);

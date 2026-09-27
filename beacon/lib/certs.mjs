@@ -1,4 +1,4 @@
-// a private CA (10 years) and a leaf certificate (398 days) it signs. both
+// a private CA (5 years) and a leaf certificate (398 days) it signs. both
 // live under the data dir with 0600 perms. the leaf is reissued when it is
 // close to expiry or when the set of names/addresses it must cover changed;
 // the CA stays put so phones only ever install it once.
@@ -10,7 +10,7 @@ import { X509Certificate, createHash } from 'node:crypto';
 import selfsigned from 'selfsigned';
 
 const DAY = 86_400_000;
-const CA_DAYS = 3650;
+const CA_DAYS = 1826; // five years: long enough to install once, short enough to expire if the key ever leaks
 const LEAF_DAYS = 398; // apple rejects TLS leaves valid for longer
 const RENEW_DAYS = 30;
 const IPV4 = /^\d{1,3}(\.\d{1,3}){3}$/;

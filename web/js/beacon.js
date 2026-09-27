@@ -82,7 +82,7 @@ function open() {
   ws.onclose = (ev) => {
     if (beacon.ws === ws) beacon.ws = null;
     beacon.sessionId = null;
-    for (const [, rej] of beacon.pending) rej(new Error('beacon disconnected'));
+    for (const [, p] of beacon.pending) p.reject(new Error('beacon disconnected'));
     beacon.pending.clear();
     if (ev.code === 4001) { beacon.wanted = false; setStatus('error', 'beacon refused the password'); return; }
     if (beacon.wanted) { setStatus('connecting', ev.reason || `closed (${ev.code})`); scheduleRetry(); } else setStatus('off');

@@ -21,7 +21,8 @@ export async function requestNotifications() {
   try { return await Notification.requestPermission(); } catch { return Notification.permission; }
 }
 
-export async function notifyIncoming({ senderName, roomName, route }) {
+// the notification carries the sender's name and nothing else: no room, no text
+export async function notifyIncoming({ senderName, route }) {
   const mode = state.settings.notifications;
   if (mode === 'off') return;
   if (!document.hidden && document.hasFocus()) return;
@@ -29,7 +30,7 @@ export async function notifyIncoming({ senderName, roomName, route }) {
   if (!s.supported || s.permission !== 'granted') return;
   try {
     const reg = await navigator.serviceWorker.ready;
-    const title = mode === 'silent' ? 'gabriel' : `${senderName}${roomName ? ` · ${roomName}` : ''}`;
+    const title = mode === 'silent' ? 'gabriel' : String(senderName).slice(0, 40);
     await reg.showNotification(title, {
       body: mode === 'silent' ? 'something arrived' : 'sent a message',
       tag: mode === 'silent' ? 'gabriel' : `gabriel:${route}`,

@@ -83,6 +83,7 @@ export function installPage({ ca, name, httpsUrls }) {
 <body>
 <h1>${esc(name)}: this beacon uses its own certificate; install it once</h1>
 <p>There is no internet on this network, so no public authority can vouch for the beacon. Instead it carries its own certificate authority. Browsers only allow encryption, the camera and offline install on pages served over https, so your phone has to trust that authority before the console will work. You do this one time per device.</p>
+<p><strong>What trusting it means.</strong> A trusted authority can vouch for any website name, not only this beacon. Whoever holds the beacon's private key file could, on this device, impersonate other https sites until you remove the certificate (iPhone: Settings → General → VPN &amp; Device Management; Android: Settings → Security → Encryption &amp; credentials → Trusted credentials → User; desktop: the same store you imported it into). Only install a beacon run by someone you trust with that, and remove it when the deployment ends. The certificate expires by itself after five years.</p>
 <p>Before trusting it, compare this fingerprint with the one printed where the beacon is running:</p>
 <span class="fp">SHA-256 ${esc(ca.fingerprint)}</span>
 <p class="dl"><a href="/ca.mobileconfig">iPhone / iPad profile</a> <a href="/ca.crt">certificate (.crt)</a> <a href="/ca.pem">PEM</a> <a href="/ca.der">DER</a></p>
