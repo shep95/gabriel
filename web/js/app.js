@@ -12,7 +12,7 @@ import {
 import * as db from './db.js';
 import { renderQr } from './qr.js';
 import { cameraAvailable, startScanner } from './scan.js';
-import { registerServiceWorker, offlineReadiness, watchOnline } from './status.js';
+import { registerServiceWorker, offlineReadiness, watchOnline, onWorkerUpdate } from './status.js';
 import { $, $$, toast, openOverlay, closeOverlay, confirmDialog, promptDialog, download, copyText } from './ui.js';
 import { state, DEFAULT_SETTINGS, resetUnlockedState, on } from './state.js';
 import { beacon, connectBeacon, disconnectBeacon, normalizeBeaconUrl } from './beacon.js';
@@ -49,7 +49,12 @@ document.addEventListener('visibilitychange', () => {
   if (mins > 0 && Date.now() - lastActivity > mins * 60_000 && !call.roomId) lock('locked after inactivity');
 });
 
+// set when a newer version arrived while the vault was open; it loads at the
+// next lock so nothing typed or in a call is lost
+let reloadOnLock = false;
+
 function lock(reason) {
+  if (reloadOnLock) { location.reload(); return; }
   stopLiveShare();
   if (call.roomId) leaveCall().catch(() => {});
   disconnectBeacon();
@@ -1328,6 +1333,11 @@ async function main() {
       if (e.data && e.data.type === 'navigate' && state.vaultKey && typeof e.data.route === 'string' && e.data.route.startsWith('#/')) location.hash = e.data.route;
     });
   }
+  onWorkerUpdate(() => {
+    if (!state.vaultKey) { location.reload(); return; }
+    reloadOnLock = true;
+    toast('a newer version is ready. it appears when you next lock.');
+  });
   registerServiceWorker().then(async () => { state.readiness = await offlineReadiness(); if (state.route === 'overview' && state.vaultKey) route(); });
   await loadProfile();
   renderGate();

@@ -2,7 +2,7 @@
 // and never fetch anything off this origin, with one exception the person
 // turns on by hand: map tiles from openstreetmap.org. bump VERSION on release.
 
-const VERSION = 'gabriel-console-v4';
+const VERSION = 'gabriel-console-v5';
 const PRECACHE = [
   './',
   './index.html',

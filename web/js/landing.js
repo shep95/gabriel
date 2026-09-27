@@ -1,4 +1,4 @@
-import { registerServiceWorker, offlineReadiness, watchOnline } from './status.js';
+import { registerServiceWorker, offlineReadiness, watchOnline, onWorkerUpdate } from './status.js';
 
 const $ = (s, r = document) => r.querySelector(s);
 
@@ -56,6 +56,8 @@ async function main() {
   });
   watchOnline((online) => setPill($('#pill-net'), online ? 'off' : 'on', online ? 'network: connected' : 'network: off, still working'));
 
+  // a newer version took over: the landing holds nothing, so show it now
+  onWorkerUpdate(() => location.reload());
   const reg = await registerServiceWorker();
   if (reg.registration) {
     // the first install finishes a moment after ready; re-measure when it does

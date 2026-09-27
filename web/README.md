@@ -95,7 +95,9 @@ local network and provides the relay. see `../beacon/README.md`.
 web cryptography, service workers, the camera and the microphone require a
 secure context.
 
-to update: bump `VERSION` in `sw.js` so installed clients fetch the new files.
+to update: bump `VERSION` in `sw.js`. an open page notices the new worker and
+reloads itself: the landing at once, the console at once when locked and at the
+next lock when open (a toast says so), so nothing typed or in a call is lost.
 
 ## security notes
 
