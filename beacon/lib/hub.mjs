@@ -19,7 +19,7 @@ export const defaults = {
   sweepMs: 60_000,
   maxConnections: 2000,
   maxTags: 20_000,
-  maxSubs: 64,
+  maxSubs: 256,
   pubRate: 30,
   pubBurst: 60,
   bytesPerMin: 8 * 1024 * 1024,   // a 1.5 mb photo or file is thirteen frames; two a minute must fit
@@ -104,10 +104,10 @@ export class Hub {
     this.perAddress = new Map();   // address -> { conns, fails: WindowCounter, blockedUntil }
     this.timers = [
       setInterval(() => this.pingAll(), this.o.pingMs),
-      setInterval(() => this.buffers.sweep(Date.now()), this.o.sweepMs),
+      setInterval(() => { const now = Date.now(); this.buffers.sweep(now); this.sweepAddresses(now); }, this.o.sweepMs),
     ];
     for (const t of this.timers) t.unref();
-    this.wss.on('connection', (ws) => this.onConnection(ws));
+    this.wss.on('connection', (ws, req) => this.onConnection(ws, req));
   }
 
   // take over upgrades on `path` from an http or https server.
@@ -139,6 +139,13 @@ export class Hub {
     return a;
   }
 
+  // addresses that hold no connection, no block and no recent failure are forgotten
+  sweepAddresses(now) {
+    for (const [key, a] of this.perAddress) {
+      if (!a.conns && a.blockedUntil < now && !a.fails.add(0, now)) this.perAddress.delete(key);
+    }
+  }
+
   onConnection(ws, req) {
     const addr = req && req.socket ? req.socket.remoteAddress : 'unknown';
     const a = this.address(addr);
@@ -157,6 +164,7 @@ export class Hub {
     };
     this.conns.add(c);
     this.o.log(`ws open connections=${this.conns.size}`);
+    c.replayed = new Map(); // tag -> when this connection last received the buffer
     ws.on('pong', () => { c.alive = true; });
     ws.on('message', (data, isBinary) => this.onMessage(c, data, isBinary));
     ws.on('close', (code) => this.onClose(c, code));
@@ -177,6 +185,9 @@ export class Hub {
   }
 
   onMessage(c, data, isBinary) {
+    // a socket we have told to close may still deliver frames until the peer
+    // answers the close handshake, up to thirty seconds; none of them count
+    if (c.ws.readyState !== 1) return;
     if (isBinary) return c.ws.close(1003, 'text frames only');
     const now = Date.now();
     if (c.bytes.add(data.length, now) > this.o.bytesPerMin) return this.fail(c, 'rate', now);
@@ -189,8 +200,10 @@ export class Hub {
     if (!m || typeof m !== 'object' || typeof m.t !== 'string') return this.fail(c, 'bad_frame', now);
     if (!c.authed) return this.hello(c, m, now);
     switch (m.t) {
-      case 'sub': return this.sub(c, m, now);
-      case 'unsub': return this.unsub(c, m, now);
+      // subscriptions and publications share one budget: a subscribe replays a
+      // buffer, which can cost more than a publish
+      case 'sub': return c.pubs.take(now) ? this.sub(c, m, now) : this.fail(c, 'rate', now);
+      case 'unsub': return c.pubs.take(now) ? this.unsub(c, m, now) : this.fail(c, 'rate', now);
       case 'pub': return this.pub(c, m, now);
       case 'ping': return send(c, { t: 'pong', now });
       case 'hello': return; // already greeted; ignore
@@ -199,10 +212,10 @@ export class Hub {
   }
 
   hello(c, m, now) {
-    if (m.t !== 'hello') return c.ws.close(4000, 'hello first');
+    if (m.t !== 'hello') return closeNow(c.ws, 4000, 'hello first');
     if (m.v !== 1) {
       send(c, { t: 'error', code: 'version' });
-      return c.ws.close(4002, 'unsupported version');
+      return closeNow(c.ws, 4002, 'unsupported version');
     }
     if (this.o.password && !(typeof m.pw === 'string' && sameSecret(m.pw, this.o.password))) {
       // a wrong password is counted per address; past the limit that address
@@ -210,7 +223,7 @@ export class Hub {
       const a = this.address(c.addr);
       if (a.fails.add(1, now) >= this.o.helloFailLimit) a.blockedUntil = now + this.o.helloFailBlockMs;
       send(c, { t: 'error', code: 'auth' });
-      return c.ws.close(4001, 'bad password');
+      return closeNow(c.ws, 4001, 'bad password');
     }
     clearTimeout(c.helloTimer);
     c.authed = true;
@@ -236,7 +249,14 @@ export class Hub {
       let set = this.subs.get(tag);
       if (!set) this.subs.set(tag, (set = new Set()));
       set.add(c);
-      for (const f of this.buffers.get(tag, now)) send(c, { t: 'msg', tag, ...f, replay: true });
+      // the buffer is replayed once a minute per tag and connection at most: a
+      // client flipping sub and unsub cannot make the relay stream it endlessly
+      const last = c.replayed.get(tag) || 0;
+      if (now - last > 60_000) {
+        c.replayed.set(tag, now);
+        if (c.replayed.size > this.o.maxSubs * 2) c.replayed.delete(c.replayed.keys().next().value);
+        for (const f of this.buffers.get(tag, now)) { if (!send(c, { t: 'msg', tag, ...f, replay: true }, this.o.maxBuffered)) break; }
+      }
       this.count(tag);
     }
   }
@@ -252,19 +272,18 @@ export class Hub {
   }
 
   pub(c, m, now) {
-    if (typeof m.tag !== 'string' || !TAG.test(m.tag)) return this.fail(c, 'bad_tag', now);
-    if (typeof m.data !== 'string' || m.data.length > this.o.maxData) return this.fail(c, 'bad_data', now);
-    if (m.id !== undefined && !(typeof m.id === 'string' && m.id.length <= 40)) return this.fail(c, 'bad_id', now);
-    if (!c.pubs.take(now)) return this.fail(c, 'rate', now);
+    const id = typeof m.id === 'string' && m.id.length <= 40 ? m.id : undefined;
+    if (typeof m.tag !== 'string' || !TAG.test(m.tag)) return this.fail(c, 'bad_tag', now, id);
+    if (typeof m.data !== 'string' || m.data.length > this.o.maxData) return this.fail(c, 'bad_data', now, id);
+    if (m.id !== undefined && id === undefined) return this.fail(c, 'bad_id', now);
+    if (!c.pubs.take(now)) return this.fail(c, 'rate', now, id);
     const frame = { data: m.data, ts: now, id: hex16() };
     const set = this.subs.get(m.tag);
     if (set && set.size > (set.has(c) ? 1 : 0)) {
       const out = JSON.stringify({ t: 'msg', tag: m.tag, ...frame });
       for (const s of set) {
         if (s === c) continue;
-        // a reader that never drains is terminated rather than allowed to pin memory
-        if (s.ws.bufferedAmount > this.o.maxBuffered) s.ws.terminate();
-        else s.ws.send(out);
+        deliver(s.ws, out, this.o.maxBuffered);
       }
     }
     if (m.keep === true) this.buffers.push(m.tag, frame);
@@ -291,12 +310,14 @@ export class Hub {
     const set = this.subs.get(tag);
     if (!set) return;
     const out = JSON.stringify({ t: 'count', tag, n: set.size });
-    for (const s of set) if (s.ws.readyState === 1) s.ws.send(out);
+    for (const s of set) deliver(s.ws, out, this.o.maxBuffered);
   }
 
-  fail(c, code, now) {
-    send(c, { t: 'error', code });
-    if (c.violations.add(1, now) >= this.o.maxViolations) c.ws.close(4008, 'too many bad frames');
+  // the error names the client's own frame id when it had one, so a publisher
+  // learns at once that this publication was refused instead of waiting for an ack
+  fail(c, code, now, id) {
+    send(c, id === undefined ? { t: 'error', code } : { t: 'error', code, id });
+    if (c.violations.add(1, now) >= this.o.maxViolations) closeNow(c.ws, 4008, 'too many bad frames');
     return null;
   }
 
@@ -339,8 +360,23 @@ export function attachHub(server, { path = '/ws', ...opts } = {}) {
   return { hub, stats: () => hub.stats(), close: (code, reason) => hub.close(code, reason) };
 }
 
-function send(c, obj) {
-  if (c.ws.readyState === 1) c.ws.send(JSON.stringify(obj));
+// every write goes through here: nothing is queued for a reader that never
+// drains. past the buffer limit the socket is terminated instead.
+function deliver(ws, str, maxBuffered) {
+  if (ws.readyState !== 1) return false;
+  if (ws.bufferedAmount > maxBuffered) { ws.terminate(); return false; }
+  ws.send(str);
+  return true;
+}
+function send(c, obj, maxBuffered = 16 * 1024 * 1024) {
+  return deliver(c.ws, JSON.stringify(obj), maxBuffered);
+}
+// close for cause: the close frame is sent, and the socket is torn down shortly
+// after whether or not the peer answers, so nothing more from it is read
+function closeNow(ws, code, reason) {
+  try { ws.close(code, reason); } catch { /* already closing */ }
+  const t = setTimeout(() => { try { ws.terminate(); } catch { /* gone */ } }, 1000);
+  if (t.unref) t.unref();
 }
 
 function reject(socket, status) {

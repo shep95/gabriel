@@ -6,6 +6,7 @@ import { createServer as createHttps } from 'node:https';
 import { createServer as createHttp } from 'node:http';
 import { join } from 'node:path';
 import qrcode from 'qrcode-terminal';
+import { spawn } from 'node:child_process';
 import { parseConfig, usage } from './lib/args.mjs';
 import { ensureCerts, lanAddresses } from './lib/certs.mjs';
 import { createStatic, sendFile, text } from './lib/static.mjs';
@@ -64,6 +65,11 @@ function createApp(cfg, hubStats) {
     if (pathname.startsWith('/tiles/')) return text(res, 404, 'not found');
     return serveStatic(req, res, pathname);
   };
+}
+
+function openInBrowser(url) {
+  const cmd = process.platform === 'darwin' ? ['open', [url]] : process.platform === 'win32' ? ['cmd', ['/c', 'start', '', url]] : ['xdg-open', [url]];
+  try { spawn(cmd[0], cmd[1], { stdio: 'ignore', detached: true }).on('error', () => {}).unref(); } catch { /* no browser here; the address is printed */ }
 }
 
 function listen(server, port, host) {
@@ -125,10 +131,19 @@ async function main() {
   const ips = cfg.host === '0.0.0.0' || cfg.host === '::' ? lanAddresses() : [cfg.host];
   const shown = ips.length ? ips : ['127.0.0.1'];
   const httpsUrls = shown.map((ip) => `https://${ip}:${cfg.httpsPort}/`);
+  const installUrl = `http://${shown[0]}:${cfg.httpPort}/`;
   console.log('');
-  console.log(`beacon "${cfg.name}" is up`);
-  console.log('  console (https):  ' + httpsUrls.join('\n                    '));
-  console.log(`  install page:     http://${shown[0]}:${cfg.httpPort}/`);
+  console.log('══════════════════════════════════════════════════════════════');
+  console.log(`  beacon "${cfg.name}" is running. tell everyone in the room:`);
+  console.log('');
+  console.log('  1. join this wi-fi (this machine\'s hotspot, or the same router)');
+  console.log(`  2. open  ${installUrl}  and tap "install"`);
+  console.log('  3. tap "open the console"; it connects here by itself');
+  console.log('');
+  console.log('  or scan this:');
+  console.log('══════════════════════════════════════════════════════════════');
+  qrcode.generate(installUrl, { small: true }, (q) => console.log(q));
+  console.log(`  console (https):  ${httpsUrls.join('\n                    ')}`);
   console.log(`  CA sha256:        ${certs.ca.fingerprint}`);
   console.log(`  password:         ${cfg.password ? 'set' : 'none'}`);
   console.log(`  tiles:            ${cfg.tiles ? cfg.tiles : 'off'}`);
@@ -140,7 +155,9 @@ async function main() {
     console.log('  !!! never forward or expose this port; anything on the path sees every frame.');
   }
   console.log('');
-  qrcode.generate(httpsUrls[0], { small: true }, (q) => console.log(q));
+  // the machine running the beacon opens its own install page, so the person
+  // who started it sees the same screen everyone else will
+  if (cfg.open && !dev && !process.env.CI) openInBrowser(installUrl);
 
   let stopping = false;
   const stop = async (sig) => {

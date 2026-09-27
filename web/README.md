@@ -122,8 +122,12 @@ first deploy, set the public url once so crawlers get absolute links:
 node web/scripts/set-site-url.mjs https://your-domain.example
 ```
 
-**a beacon.** `node beacon/server.mjs` serves this directory over https on the
-local network and provides the relay. see `../beacon/README.md`.
+**a beacon.** `npx github:shep95/gabriel.asher` (or `node beacon/server.mjs`)
+serves this directory over https on the local network and provides the relay.
+a console served this way connects to its beacon by itself; a console opened
+from anywhere else looks for a beacon on the hotspot's usual addresses when
+none is set, and the privacy page has "find one on this network". see
+`../beacon/README.md`.
 
 **anything else.** any static file server over https or `http://localhost`.
 web cryptography, service workers, the camera and the microphone require a

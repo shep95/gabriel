@@ -1,0 +1,20 @@
+{
+  "name": "gabriel",
+  "version": "0.1.0",
+  "private": true,
+  "description": "gabriel: an offline console and its beacon. `npx github:shep95/gabriel.asher` runs the beacon.",
+  "type": "module",
+  "bin": { "gabriel-beacon": "beacon/server.mjs" },
+  "engines": { "node": ">=20" },
+  "scripts": {
+    "start": "node beacon/server.mjs",
+    "beacon": "node beacon/server.mjs",
+    "test": "node --test beacon/test/*.test.mjs && node web/tests/e2e.mjs && node web/tests/sweep.mjs && node web/tests/perf.mjs"
+  },
+  "dependencies": {
+    "qrcode-terminal": "0.12.0",
+    "selfsigned": "5.5.0",
+    "ws": "8.22.0"
+  },
+  "license": "Unlicense"
+}

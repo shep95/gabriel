@@ -20,7 +20,7 @@ function shuffled(list) {
 // inputs: one or more fields the keyboard types into; the last one focused
 // receives the keys. onDone runs for the done key (usually: submit). mount is
 // where the sheet goes: after that element, or inside it with where: 'append'.
-export function quietKeyboard(inputs, { onDone, mount, where = 'after' } = {}) {
+export function quietKeyboard(inputs, { onDone, mount, where = 'after', stay = false } = {}) {
   const fields = Array.isArray(inputs) ? inputs : [inputs];
   let target = fields[0];
   let panel = null;
@@ -52,7 +52,8 @@ export function quietKeyboard(inputs, { onDone, mount, where = 'after' } = {}) {
     el.dispatchEvent(new Event('input', { bubbles: true }));
   };
 
-  const key = (label, k, cls = '') => `<button type="button" class="k ${cls}" data-k="${k}" aria-label="${label}">${label}</button>`;
+  const esc = (v) => String(v).replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  const key = (label, k, cls = '') => `<button type="button" class="k ${cls}" data-k="${esc(k)}" aria-label="${esc(label)}">${esc(label)}</button>`;
   const render = () => {
     const letters = shuffled(symbols ? SYMBOLS : LETTERS).map((c) => (shift && !symbols ? c.toUpperCase() : c));
     const rows = symbols ? [letters.slice(0, 7), letters.slice(7, 14), letters.slice(14)] : [letters.slice(0, 10), letters.slice(10, 19), letters.slice(19)];
@@ -77,7 +78,7 @@ export function quietKeyboard(inputs, { onDone, mount, where = 'after' } = {}) {
     if (k === 'shift') { shift = !shift; render(); return; }
     if (k === 'sym') { symbols = !symbols; render(); return; }
     if (k === 'back') { backspace(); return; }
-    if (k === 'done') { api.close(); if (onDone) onDone(); return; }
+    if (k === 'done') { if (!stay) api.close(); if (onDone) onDone(); return; }
     insert(k);
     if (shift && !symbols) { shift = false; render(); }
   };

@@ -64,6 +64,7 @@ export function watchPosition(cb, { minIntervalMs = 20000 } = {}) {
 let headingCb = null;
 let headingHandler = null;
 export async function startCompass(cb) {
+  stopCompass(); // never two listeners for one radar
   headingCb = cb;
   if (typeof DeviceOrientationEvent !== 'undefined' && typeof DeviceOrientationEvent.requestPermission === 'function') {
     try { const r = await DeviceOrientationEvent.requestPermission(); if (r !== 'granted') return false; } catch { return false; }

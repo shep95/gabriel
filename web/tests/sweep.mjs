@@ -212,7 +212,37 @@ async function sweepConsole(browser, viewport, label) {
     await page.click('#t-send'); await sleep(200);
   });
 
-  await step(label, 'rooms without a beacon: create, open, compose, sheets, call panel, leave', async () => {
+  await step(label, 'served by a beacon: the console connects to it by itself', async () => {
+    // this console came from the beacon's own http server, so it must find
+    // that beacon without anyone typing an address
+    const found = await page.waitForFunction(() => document.querySelector('#nav-beacon')?.classList.contains('on'), null, { timeout: 10000 }).then(() => true).catch(() => false);
+    if (!found) problem(label, 'a console served by a beacon did not connect to it by itself');
+    await go(page, label, 'rooms', /^rooms$/);
+    await page.click('#room-new'); await page.waitForSelector('#overlay-box #pd');
+    await page.fill('#overlay-box #pd', 'east gate'); await page.click('#overlay-box #pd-ok');
+    await page.waitForSelector('#compose', { timeout: 8000 }).catch(() => problem(label, 'room view did not open after founding'));
+    await page.fill('#compose', 'is anyone at the gate'); await page.click('#send');
+    await page.waitForSelector('.bubble.mine', { timeout: 8000 }).catch(() => problem(label, 'a message sent through the found beacon did not appear'));
+    if (await overlayOpen(page)) { problem(label, 'the no-beacon sheet opened while a beacon was connected'); await closeOverlayWith(page, label, '#nb-close'); }
+    // a call: the panel, mute, camera, and the same button leaves
+    await page.click('#room-call'); await sleep(1500);
+    if (!(await page.$('#call-panel .callpanel'))) problem(label, 'call panel did not appear');
+    else {
+      await page.click('#c-mute'); await sleep(200);
+      await page.click('#c-video').catch(() => {}); await sleep(600);
+      await page.click('#room-call'); await sleep(800);
+      if (await page.$('#call-panel .callpanel')) problem(label, 'call panel stayed after leaving');
+    }
+    await page.click('#room-people'); await sleep(400);
+    await page.click('#overlay-box #pp-leave'); await sleep(400);
+    await closeOverlayWith(page, label, '#c-ok'); await sleep(500);
+    // disconnect for the next step, which is about what happens with no beacon
+    await go(page, label, 'privacy', /^privacy$/);
+    if (/disconnect/.test(await page.$eval('#b-connect', (b) => b.textContent))) { await page.click('#b-connect'); await sleep(400); }
+    if (await page.$eval('#b-auto', (c) => c.checked)) { await page.click('#b-auto'); await sleep(200); }
+  });
+
+  await step(label, 'rooms without a beacon: create, open, compose, sheets, call explained, leave', async () => {
     await go(page, label, 'rooms', /^rooms$/);
     await page.click('#room-new'); await page.waitForSelector('#overlay-box #pd');
     await page.fill('#overlay-box #pd', 'north stairwell'); await page.click('#overlay-box #pd-ok');
@@ -230,15 +260,11 @@ async function sweepConsole(browser, viewport, label) {
     await page.click('#room-where'); await sleep(400);
     if (await page.$('#overlay-box #wh-locate')) { await page.click('#overlay-box #wh-locate'); await sleep(1500); }
     await closeOverlayWith(page, label, '#wh-close');
-    await page.click('#room-call'); await sleep(1500);
-    if (!(await page.$('#call-panel .callpanel'))) problem(label, 'call panel did not appear');
-    else {
-      await page.click('#c-mute'); await sleep(200);
-      await page.click('#c-video').catch(() => {}); await sleep(600);
-      // the same button starts and leaves the call
-      await page.click('#room-call'); await sleep(800);
-      if (await page.$('#call-panel .callpanel')) problem(label, 'call panel stayed after leaving');
-    }
+    // a call with no beacon has no way to be set up: the same sheet, not a dead button
+    await page.click('#room-call'); await sleep(600);
+    if (!(await overlayOpen(page))) problem(label, 'calling without a beacon did not explain itself');
+    await closeOverlayWith(page, label, '#nb-close');
+    if (await page.$('#call-panel .callpanel')) problem(label, 'a call panel appeared with no beacon');
     await page.click('#room-people'); await sleep(400);
     await page.click('#overlay-box #pp-leave'); await sleep(400);
     await closeOverlayWith(page, label, '#c-ok');

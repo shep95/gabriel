@@ -31,10 +31,10 @@ export function watchInstallPrompt() {
 export async function promptInstall() {
   const p = state.installPrompt;
   if (!p) return 'unavailable';
-  p.prompt();
-  const { outcome } = await p.userChoice;
-  if (outcome === 'accepted') state.installPrompt = null;
-  return outcome;
+  // a deferred prompt can be shown once; after any answer it is spent
+  state.installPrompt = null;
+  try { await p.prompt(); } catch { return 'unavailable'; }
+  try { const { outcome } = await p.userChoice; return outcome; } catch { return 'dismissed'; }
 }
 
 export function installInstructions() {

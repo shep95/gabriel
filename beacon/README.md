@@ -1,12 +1,39 @@
 # beacon
 
-A small Node server that carries the gabriel console on a network with no
-internet. Run it on a laptop or Raspberry Pi attached to a Wi-Fi hotspot; phones
-on that Wi-Fi open the console from the beacon over https and exchange
-end-to-end-encrypted frames through its WebSocket hub. The beacon never sees
-plaintext: it only forwards opaque strings to whoever subscribed to the same
-tag, and keeps a short in-memory replay buffer per tag. Nothing is written to
-disk except its own certificates.
+the small relay that carries the console's rooms and calls on a wi-fi with no
+internet. one person runs it; everyone else joins the wi-fi and opens the
+address it shows. it sees only random tags and ciphertext.
+
+## running it, simplest first
+
+**one command, on a laptop with node installed** (node is a single download
+from nodejs.org, the lts button):
+
+```
+npx github:shep95/gabriel.asher
+```
+
+**or double-click**: download the repository as a zip, unzip it, and open
+`beacon/start.command` (mac), `beacon/start.bat` (windows) or `beacon/start.sh`
+(linux). the first start installs its three dependencies; every later start
+is instant.
+
+**or from a checkout**: `cd beacon && npm install && node server.mjs`.
+
+what happens next, every time:
+
+1. it prints three lines to tell the room, and a qr code of its join page,
+   and opens that page in your own browser.
+2. everyone joins the same wi-fi: this machine's hotspot, a phone's hotspot,
+   or the room's router. no internet is needed on it.
+3. each person opens the join page once, taps install for the certificate,
+   then "open the console". the console served by the beacon connects to it
+   by itself, and a console opened from anywhere else finds it on the
+   hotspot's usual addresses and connects too.
+
+turn the machine's hotspot on before starting the beacon so the printed
+address is the hotspot's. `--no-open` keeps the browser closed; `--password`
+asks phones for a password; `--name` names the room.
 
 ## quick start
 

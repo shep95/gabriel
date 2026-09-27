@@ -403,10 +403,13 @@ export function chunkForQr(text, size = 700) {
   return frames;
 }
 
+export const MAX_CHUNKS = 64;
 export function parseChunk(text) {
-  const m = /^GBR3-([0-9A-Z]{4})-(\d+)-(\d+)-(.+)$/s.exec(text.trim().toUpperCase());
+  const m = /^GBR3-([0-9A-Z]{4})-(\d{1,3})-(\d{1,3})-(.+)$/s.exec(text.trim().toUpperCase());
   if (!m) return null;
-  return { tid: m[1], index: Number(m[2]), total: Number(m[3]), part: m[4] };
+  const index = Number(m[2]), total = Number(m[3]);
+  if (total < 1 || total > MAX_CHUNKS || index < 1 || index > total) return null;
+  return { tid: m[1], index, total, part: m[4] };
 }
 
 // ---------- beacon tags ----------

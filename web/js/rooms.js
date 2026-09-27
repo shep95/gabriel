@@ -52,6 +52,7 @@ function acceptedTs(ts, rx) {
 // ---------- persistence ----------
 
 export async function loadRooms() {
+  goneConversations.clear();
   const recs = await db.all('rooms');
   state.rooms = [];
   for (const r of recs) {
@@ -62,6 +63,7 @@ export async function loadRooms() {
 }
 
 export async function saveRoom(room) {
+  if (!state.vaultKey || goneConversations.has(room.id)) return;
   const { id, ...plain } = room;
   await db.put('rooms', { id, enc: await sealRecord(state.vaultKey, 'rooms', id, plain) });
   const i = state.rooms.findIndex((r) => r.id === id);
@@ -69,6 +71,7 @@ export async function saveRoom(room) {
 }
 
 export async function deleteRoom(roomId) {
+  goneConversations.add(roomId);
   await db.del('rooms', roomId);
   await deleteConversationMessages(roomId);
   state.rooms = state.rooms.filter((r) => r.id !== roomId);
@@ -91,8 +94,16 @@ export async function loadMessages(convId) {
   return out;
 }
 
-async function storeMessage(convId, msg) {
-  const rec = { id: msg.id, roomId: convId, enc: await sealRecord(state.vaultKey, 'messages', msg.id, msg) };
+// the record key is local (conversation, sender, wire id): a peer choosing a
+// wire id can never overwrite another message, in this conversation or any other
+function messageKey(convId, msg) { return `${convId}|${msg.fp}|${msg.id}`; }
+const goneConversations = new Set(); // deleted rooms and forgotten devices: handlers still in flight must not write them back
+export function forgetConversation(convId) { goneConversations.add(convId); }
+async function storeMessage(convId, msg, { incoming = false } = {}) {
+  if (!state.vaultKey || goneConversations.has(convId)) return false;
+  const key = messageKey(convId, msg);
+  if (incoming && await db.get('messages', key)) return false;
+  const rec = { id: key, roomId: convId, enc: await sealRecord(state.vaultKey, 'messages', key, msg) };
   await db.put('messages', rec);
   const all = await db.byIndex('messages', 'room', convId);
   // prune in batches so the cost is paid once per fifty messages, not per message
@@ -102,6 +113,15 @@ async function storeMessage(convId, msg) {
     opened.sort((a, b) => a.rx.localeCompare(b.rx));
     for (const r of opened.slice(0, all.length - MAX_HISTORY)) await db.del('messages', r.id);
   }
+  return true;
+}
+
+// the ledger of frames already handled is pruned past the relay's replay window
+export async function pruneSeen(maxAgeMs = 48 * 3600_000) {
+  const cutoff = new Date(Date.now() - maxAgeMs).toISOString();
+  let n = 0;
+  for (const r of await db.all('seen')) { if (!r.t || r.t < cutoff) { await db.del('seen', r.id); n++; } }
+  return n;
 }
 
 // ---------- tag bookkeeping ----------
@@ -118,25 +138,44 @@ function currentKey(room) {
   return b64url.decode(k);
 }
 
-export async function refreshSubscriptions() {
+let refreshing = null;
+let refreshAgain = false;
+// one refresh at a time; a call during a run makes it run once more at the end,
+// so a device added mid-iteration is never left unsubscribed
+export function refreshSubscriptions() {
+  if (refreshing) { refreshAgain = true; return refreshing; }
+  refreshing = (async () => {
+    try {
+      do { refreshAgain = false; await refreshOnce(); } while (refreshAgain);
+    } finally { refreshing = null; }
+  })();
+  return refreshing;
+}
+async function refreshOnce() {
   if (!state.vaultKey || !state.identity) return;
   const wanted = [];
-  for (const room of state.rooms) {
+  const liveRooms = new Set();
+  for (const room of state.rooms.slice()) {
     if (room.left || room.pending) continue;
     try {
       const tag = await roomTag(currentKey(room));
       const old = tagsByRoom.get(room.id);
       if (old && old !== tag) { unsubscribe([old]); roomsByTag.delete(old); }
-      tagsByRoom.set(room.id, tag); roomsByTag.set(tag, room.id); wanted.push(tag);
+      tagsByRoom.set(room.id, tag); roomsByTag.set(tag, room.id); wanted.push(tag); liveRooms.add(room.id);
     } catch {
       // one broken room must not silence every other conversation
     }
+  }
+  // rooms left, dissolved, declined or deleted drop their tags
+  for (const [roomId, tag] of Array.from(tagsByRoom)) {
+    if (liveRooms.has(roomId)) continue;
+    unsubscribe([tag]); tagsByRoom.delete(roomId); roomsByTag.delete(tag);
   }
   // pair inboxes for today and yesterday, so a clock a few hours off still meets
   const today = dayString();
   const yesterday = dayString(new Date(Date.now() - 86_400_000));
   const stillWanted = new Set();
-  for (const dev of state.devices) {
+  for (const dev of state.devices.slice()) {
     if (!isKey32(dev.pairKey)) continue;
     const pk = b64url.decode(dev.pairKey);
     for (const day of [today, yesterday]) {
@@ -152,6 +191,16 @@ export async function refreshSubscriptions() {
 
 // re-derive inbox tags when the day changes
 setInterval(() => { if (inboxDay && inboxDay !== dayString()) refreshSubscriptions().catch(() => {}); }, 60_000);
+
+// lock and wipe: nothing of the previous identity may stay subscribed or in memory
+export function resetRooms() {
+  const tags = [...tagsByRoom.values(), ...inboxByTag.keys()];
+  if (tags.length) unsubscribe(tags);
+  unsubscribe(Array.from(beacon.tags));
+  roomsByTag.clear(); tagsByRoom.clear(); inboxByTag.clear(); tagsByDevice.clear();
+  mediaPending.clear(); heldKeyUpdates.clear(); goneConversations.clear();
+  viewing = null; inboxDay = null;
+}
 
 // ---------- direct (pair) channel ----------
 
@@ -174,8 +223,8 @@ async function sendDirect(dev, payload, keep = true, large = false) {
 export async function sendDirectMessage(dev, kind, body, { keep = true } = {}) {
   if (kind === 'text' && (typeof body.text !== 'string' || !body.text.trim())) throw new Error('nothing to send');
   if (kind === 'text' && body.text.length > MAX_TEXT) throw new Error(`message longer than ${MAX_TEXT} characters`);
-  const env = await sendDirect(dev, { kind, ...body }, keep);
-  const msg = { id: env.id, fp: state.identity.fingerprint, ts: nowIso(), rx: nowIso(), kind, ...body };
+  const env = await sendDirect(dev, { ...body, kind }, keep);
+  const msg = { ...body, id: env.id, fp: state.identity.fingerprint, ts: nowIso(), rx: nowIso(), kind };
   if (kind === 'text' || kind === 'location') {
     await storeMessage(dmId(dev), msg);
     await touchDevice(dev);
@@ -192,7 +241,9 @@ export async function upsertDevice(dev) {
   return dev;
 }
 async function touchDevice(dev) {
-  await upsertDevice({ ...dev, lastTransferAt: nowIso() });
+  const cur = state.devices.find((d) => d.id === dev.id);
+  if (!cur) return; // forgotten while this frame was in flight
+  await upsertDevice({ ...cur, lastTransferAt: nowIso() });
 }
 
 // a device record made from an introduction: the key comes from our identity
@@ -233,8 +284,12 @@ async function handleDirect(dev, text) {
   if (!UUID.test(body.id)) return;
   const seenKey = `dev|${dev.id}|${body.id}`;
   if (await db.get('seen', seenKey)) return;
-  await db.put('seen', { id: seenKey, t: nowIso() });
   const sender = { fp: dev.fingerprint, name: dev.name };
+  const outcome = await applyDirect(dev, body, sender);
+  if (outcome !== false && state.vaultKey) await db.put('seen', { id: seenKey, t: nowIso() });
+}
+
+async function applyDirect(dev, body, sender) {
   switch (body.kind) {
     case 'room-invite': return acceptInvite(dev, body.room);
     case 'room-key': return acceptKeyUpdate(dev, body);
@@ -243,7 +298,7 @@ async function handleDirect(dev, text) {
     case 'location': {
       const msg = normalizeMessage({ ...body, fp: dev.fingerprint });
       if (!msg) return;
-      await storeMessage(dmId(dev), msg);
+      if (!(await storeMessage(dmId(dev), msg, { incoming: true }))) return;
       await touchDevice(dev);
       await noteUnread(dmId(dev));
       return emit('room:message', { roomId: dmId(dev), msg, mine: false, replay: false, sender });
@@ -281,10 +336,11 @@ function mediaMeta(m) {
   if (Number.isInteger(m.width) && Number.isInteger(m.height) && m.width > 0 && m.height > 0 && m.width <= 8192 && m.height <= 8192) { out.width = m.width; out.height = m.height; }
   return out;
 }
-function pendingIn(convId) { let n = 0; for (const k of mediaPending.keys()) if (k.startsWith(`${convId}|`)) n++; return n; }
+function pendingIn(convId, fp) { let n = 0; for (const [k, p] of mediaPending) if (k.startsWith(`${convId}|`) && (!fp || p.fp === fp)) n++; return n; }
 setInterval(() => {
-  const cutoff = Date.now() - MEDIA_PENDING_MS;
-  for (const [k, p] of mediaPending) if (p.at < cutoff || !state.vaultKey) mediaPending.delete(k);
+  const now = Date.now();
+  // a deadline from the first part: a sender cannot keep a slot alive by trickling
+  for (const [k, p] of mediaPending) if (p.first < now - MEDIA_PENDING_MS || !state.vaultKey) mediaPending.delete(k);
 }, 60_000);
 
 async function acceptMediaPart(convId, m, fp, { sender, replay, afterStore }) {
@@ -292,8 +348,8 @@ async function acceptMediaPart(convId, m, fp, { sender, replay, afterStore }) {
   const key = `${convId}|${m.mediaId}`;
   let p = mediaPending.get(key);
   if (!p) {
-    if (pendingIn(convId) >= MAX_MEDIA_PENDING) return;
-    p = { meta: mediaMeta(m), fp, parts: new Array(m.parts).fill(null), got: 0, at: Date.now() };
+    if (pendingIn(convId) >= MAX_MEDIA_PENDING || pendingIn(convId, fp) >= 3) return;
+    p = { meta: mediaMeta(m), fp, parts: new Array(m.parts).fill(null), got: 0, at: Date.now(), first: Date.now() };
     mediaPending.set(key, p);
   }
   if (p.fp !== fp || p.meta.parts !== m.parts || p.meta.size !== m.size) return;
@@ -308,7 +364,7 @@ async function acceptMediaPart(convId, m, fp, { sender, replay, afterStore }) {
   const rx = nowIso();
   const { parts, ...meta } = p.meta;
   const msg = { id: m.mediaId, fp, kind: 'media', ts: acceptedTs(m.ts, rx), rx, ...meta, data };
-  await storeMessage(convId, msg);
+  if (!(await storeMessage(convId, msg, { incoming: true }))) return;
   if (afterStore) await afterStore();
   emit('room:message', { roomId: convId, msg, mine: false, replay, sender });
 }
@@ -445,8 +501,8 @@ export async function joinRoom(room) {
 }
 
 export async function declineInvite(room) {
-  // tell the room so the founder rotates the key we were handed
-  try { room.pending = false; await refreshSubscriptions(); await sendRoomMessage(room, 'leave', {}, { keep: true }); } catch { /* offline: the key we hold dies with the record */ }
+  // tell the room so the founder rotates the key we were handed; we never subscribe
+  try { await sendRoomMessage(room, 'leave', {}, { keep: true }); } catch { /* offline: the key we hold dies with the record */ }
   await deleteRoom(room.id);
   emit('rooms:changed', { roomId: room.id, reason: 'declined' });
 }
@@ -481,7 +537,7 @@ export async function approveProposal(room, fp) {
   room.proposals = room.proposals.filter((x) => x.fp !== fp);
   await saveRoom(room);
   await inviteDevice(room, dev);
-  try { await sendRoomMessage(room, 'proposal-result', { fp, ok: true }); } catch { /* informational */ }
+  try { await sendRoomMessage(room, 'proposal-result', { target: fp, ok: true }); } catch { /* informational */ }
   return dev;
 }
 
@@ -489,7 +545,7 @@ export async function declineProposal(room, fp) {
   if (room.founderFp !== state.identity.fingerprint) throw new Error('only the founder can decide');
   room.proposals = (room.proposals || []).filter((x) => x.fp !== fp);
   await saveRoom(room);
-  try { await sendRoomMessage(room, 'proposal-result', { fp, ok: false }); } catch { /* informational */ }
+  try { await sendRoomMessage(room, 'proposal-result', { target: fp, ok: false }); } catch { /* informational */ }
 }
 
 // ---------- message requests: two members without a channel ask through the room ----------
@@ -577,16 +633,25 @@ export async function clearUnread(convId) {
   emit('unread:changed', { convId });
 }
 export function unreadTotal() {
-  return state.rooms.filter((r) => !r.left && !r.pending).reduce((n, r) => n + (r.unread || 0), 0)
+  const live = state.rooms.filter((r) => !r.left);
+  return live.filter((r) => !r.pending).reduce((n, r) => n + (r.unread || 0), 0)
     + state.devices.reduce((n, d) => n + (d.unread || 0), 0)
-    + state.rooms.filter((r) => r.pending && !r.left).length
-    + state.rooms.reduce((n, r) => n + ((r.proposals || []).length + (r.dmRequests || []).length), 0);
+    + live.filter((r) => r.pending).length
+    + live.reduce((n, r) => n + ((r.founderFp === state.identity.fingerprint ? (r.proposals || []).length : 0) + (r.dmRequests || []).length), 0);
 }
 
+// key updates from a device that is not yet our founder are held: a handover
+// travelling on the room tag can arrive after the new founder's first rotation
+const heldKeyUpdates = new Map(); // roomId -> [{ fromDev, body }]
 async function acceptKeyUpdate(fromDev, body) {
   if (typeof body.roomId !== 'string' || !ROOM_ID.test(body.roomId)) return;
   const room = state.rooms.find((x) => x.id === body.roomId);
-  if (!room || room.founderFp !== fromDev.fingerprint) return;
+  if (!room) return;
+  if (room.founderFp !== fromDev.fingerprint) {
+    const held = heldKeyUpdates.get(room.id) || [];
+    if (held.length < 8) heldKeyUpdates.set(room.id, [...held, { fromDev, body }]);
+    return false;
+  }
   const epoch = Number(body.epoch);
   if (!Number.isInteger(epoch) || !(epoch > room.epoch) || epoch > room.epoch + 1000 || !isKey32(body.key)) return;
   if (!Array.isArray(body.members)) return;
@@ -595,11 +660,18 @@ async function acceptKeyUpdate(fromDev, body) {
   // forget keys older than two epochs; history already stored is sealed locally
   for (const k of Object.keys(room.keys)) if (Number(k) < epoch - 1) delete room.keys[k];
   room.members = sanitizeMembers(body.members);
-  room.rosterAt = nowIso();
+  if (typeof body.at === 'string' && body.at > (room.rosterAt || '')) room.rosterAt = body.at;
   room.updatedAt = nowIso();
   await saveRoom(room);
   await refreshSubscriptions();
   emit('rooms:changed', { roomId: room.id, reason: 'rotated' });
+  return true;
+}
+async function replayHeldKeyUpdates(room) {
+  const held = heldKeyUpdates.get(room.id);
+  if (!held) return;
+  heldKeyUpdates.delete(room.id);
+  for (const h of held) { try { await acceptKeyUpdate(h.fromDev, h.body); } catch { /* ignore */ } }
 }
 
 function sanitizeMembers(list) {
@@ -635,7 +707,7 @@ export async function rotateEpoch(room) {
     if (m.fp === state.identity.fingerprint) continue;
     const dev = state.devices.find((d) => d.fingerprint === m.fp);
     if (!dev) { failures.push(m.name); continue; }
-    try { await sendDirect(dev, { kind: 'room-key', roomId: room.id, epoch: room.epoch, key: room.keys[String(room.epoch)], members: room.members }); }
+    try { await sendDirect(dev, { kind: 'room-key', roomId: room.id, epoch: room.epoch, key: room.keys[String(room.epoch)], members: room.members, at: room.rosterAt }); }
     catch { failures.push(m.name); }
   }
   return failures;
@@ -652,9 +724,10 @@ export async function leaveRoom(room) {
 // ---------- messages ----------
 
 export async function sendRoomMessage(room, kind, body, { keep = true } = {}) {
+  if (room.left && kind !== 'leave') throw new Error('this room has ended');
   if (kind === 'text' && (typeof body.text !== 'string' || !body.text.trim())) throw new Error('nothing to send');
   if (kind === 'text' && body.text.length > MAX_TEXT) throw new Error(`message longer than ${MAX_TEXT} characters`);
-  const msg = { id: uuid(), fp: state.identity.fingerprint, ts: nowIso(), kind, ...body };
+  const msg = { ...body, id: uuid(), fp: state.identity.fingerprint, ts: nowIso(), kind };
   const frame = await sealRoomMessage(currentKey(room), room.id, room.epoch, state.identity.signKey, msg);
   const tag = tagsByRoom.get(room.id) || await roomTag(currentKey(room));
   await publish(tag, JSON.stringify(frame), keep);
@@ -671,6 +744,7 @@ export async function sendRoomMessage(room, kind, body, { keep = true } = {}) {
 async function handleRoomFrame(room, text, replay) {
   let frame;
   try { frame = JSON.parse(text); } catch { return; }
+  if (!frame || typeof frame !== 'object') return;
   const epoch = Number(frame.e);
   if (!Number.isInteger(epoch)) return;
   const keyB64 = room.keys[String(epoch)];
@@ -686,14 +760,20 @@ async function handleRoomFrame(room, text, replay) {
   if (!UUID.test(msg.id)) return;
   const seenKey = `room|${room.id}|${msg.id}`;
   if (await db.get('seen', seenKey)) return;
-  await db.put('seen', { id: seenKey, t: nowIso() });
   const sender = room.members.find((m) => m.fp === msg.fp);
+  // the ledger is written once the frame has been handled, so a frame that
+  // fails half way (storage full, a lock mid-way) is taken again on replay
+  const outcome = await applyRoomMessage(room, msg, replay, sender);
+  if (outcome !== false && state.vaultKey) await db.put('seen', { id: seenKey, t: nowIso() });
+}
+
+async function applyRoomMessage(room, msg, replay, sender) {
   switch (msg.kind) {
     case 'text':
     case 'location': {
       const clean = normalizeMessage(msg);
       if (!clean) return;
-      await storeMessage(room.id, clean);
+      if (!(await storeMessage(room.id, clean, { incoming: true }))) return;
       room.updatedAt = clean.rx;
       await saveRoom(room);
       if (!replay) await noteUnread(room.id);
@@ -719,8 +799,8 @@ async function handleRoomFrame(room, text, replay) {
       break;
     }
     case 'proposal-result': {
-      if (msg.fp !== room.founderFp && sender && sender.fp !== room.founderFp) return;
-      if (!replay) emit('rooms:changed', { roomId: room.id, reason: msg.ok ? 'proposal-approved' : 'proposal-declined', who: sender, fp: typeof msg.fp === 'string' ? msg.fp : null });
+      if (msg.fp !== room.founderFp) return;
+      if (!replay) emit('rooms:changed', { roomId: room.id, reason: msg.ok ? 'proposal-approved' : 'proposal-declined', who: sender, target: typeof msg.target === 'string' ? msg.target : null });
       break;
     }
     case 'dm-request': {
@@ -753,11 +833,15 @@ async function handleRoomFrame(room, text, replay) {
       room.proposals = [];
       await saveRoom(room);
       emit('rooms:changed', { roomId: room.id, reason: 'handover', who: room.members.find((m) => m.fp === msg.to) });
+      await replayHeldKeyUpdates(room);
       break;
     }
     case 'dissolve': {
       if (msg.fp !== room.founderFp) return;
+      // the room ends: nothing pending, no key kept, no tag listened to
       room.left = true;
+      room.keys = {};
+      room.proposals = []; room.dmRequests = []; room.dmAsked = [];
       await saveRoom(room);
       await refreshSubscriptions();
       emit('rooms:changed', { roomId: room.id, reason: 'dissolved', who: sender });
@@ -773,16 +857,19 @@ async function handleRoomFrame(room, text, replay) {
       emit('rooms:changed', { roomId: room.id, reason: 'roster' });
       break;
     }
-    case 'leave':
+    case 'leave': {
+      const wasMember = room.members.some((m) => m.fp === msg.fp);
       room.members = room.members.filter((m) => m.fp !== msg.fp);
       await saveRoom(room);
       emit('rooms:changed', { roomId: room.id, reason: 'left', who: sender });
       // a departed member keeps the old key; the founder issues a fresh one so
-      // "left" means "cannot read anything further"
-      if (room.founderFp === state.identity.fingerprint && !replay) {
+      // "left" means "cannot read anything further". a departure that reaches
+      // the founder from the replay buffer counts just the same.
+      if (room.founderFp === state.identity.fingerprint && wasMember) {
         rotateEpoch(room).then(() => emit('rooms:changed', { roomId: room.id, reason: 'rotated' })).catch(() => {});
       }
       break;
+    }
     case 'call':
       if (!replay) emit('room:call', { roomId: room.id, msg, sender });
       break;
@@ -798,16 +885,20 @@ async function handleRoomFrame(room, text, replay) {
 
 on('beacon:msg', async (m) => {
   if (!state.vaultKey) return;
-  const roomId = roomsByTag.get(m.tag);
-  if (roomId) {
-    const room = state.rooms.find((r) => r.id === roomId);
-    if (room && !room.left) await handleRoomFrame(room, m.data, !!m.replay);
-    return;
-  }
-  const devId = inboxByTag.get(m.tag);
-  if (devId) {
-    const dev = state.devices.find((d) => d.id === devId);
-    if (dev) await handleDirect(dev, m.data);
+  try {
+    const roomId = roomsByTag.get(m.tag);
+    if (roomId) {
+      const room = state.rooms.find((r) => r.id === roomId);
+      if (room && !room.left && !room.pending) await handleRoomFrame(room, m.data, !!m.replay);
+      return;
+    }
+    const devId = inboxByTag.get(m.tag);
+    if (devId) {
+      const dev = state.devices.find((d) => d.id === devId);
+      if (dev) await handleDirect(dev, m.data);
+    }
+  } catch (e) {
+    console.error('incoming frame failed', e);
   }
 });
 

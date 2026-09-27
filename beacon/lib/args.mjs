@@ -15,6 +15,7 @@ const OPTS = {
   name: { type: 'string', env: 'BEACON_NAME', help: 'room name shown to clients (default: beacon)' },
   host: { type: 'string', env: 'BEACON_HOST', help: 'address to bind (default 0.0.0.0)' },
   'dev-http': { type: 'string', env: 'BEACON_DEV_HTTP', help: 'ALSO serve web/ and the hub over plain http on 127.0.0.1:PORT (local testing only)' },
+  'no-open': { type: 'boolean', env: 'BEACON_NO_OPEN', help: 'do not open the install page in this machine\'s browser at start' },
   'host-name': { type: 'string', multiple: true, env: 'BEACON_HOST_NAME', help: 'extra name or address to put in the certificate (repeatable; env: comma separated)' },
   help: { type: 'boolean', short: 'h' },
 };
@@ -44,6 +45,13 @@ function dir(p, name) {
   throw new Error(`--${name}: ${p} is not a directory`);
 }
 
+// a boolean from argv is true; from the environment it is any value but an explicit no
+function flag(v) {
+  if (v === undefined || v === false) return false;
+  if (v === true) return true;
+  return !/^(0|false|no|off)$/i.test(String(v).trim());
+}
+
 // argv wins over env; env wins over defaults. throws on bad input.
 export function parseConfig(argv = process.argv.slice(2), env = process.env) {
   const options = Object.fromEntries(Object.entries(OPTS).map(([k, o]) => [k, { type: o.type, ...(o.multiple && { multiple: true }), ...(o.short && { short: o.short }) }]));
@@ -69,5 +77,6 @@ export function parseConfig(argv = process.argv.slice(2), env = process.env) {
     name: get('name') || 'beacon',
     host: get('host') || '0.0.0.0',
     hostNames: (get('host-name') || []).map((s) => s.trim()).filter(Boolean),
+    open: !flag(get('no-open')),
   };
 }

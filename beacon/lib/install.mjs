@@ -63,6 +63,7 @@ export function mobileconfig(ca, name) {
 }
 
 export function installPage({ ca, name, httpsUrls }) {
+  const consoleUrl = httpsUrls[0] || '/';
   const urls = httpsUrls.map((u) => `<li><a href="${esc(u)}">${esc(u)}</a></li>`).join('');
   return `<!doctype html>
 <html lang="en">
@@ -70,61 +71,67 @@ export function installPage({ ca, name, httpsUrls }) {
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; img-src data:">
-<title>beacon: install the certificate</title>
+<meta name="robots" content="noindex, nofollow">
+<title>${esc(name)}: join</title>
 <style>
-  body { margin: 0; padding: 24px 16px 48px; background: #101214; color: #e6e6e6; font: 16px/1.5 system-ui, sans-serif; max-width: 42em; margin-inline: auto; }
-  h1 { font-size: 1.4em; margin: 0 0 .5em; } h2 { font-size: 1.05em; margin: 1.8em 0 .4em; color: #fff; }
-  a { color: #8ecbff; } code, .fp { font-family: ui-monospace, Menlo, Consolas, monospace; }
-  .fp { display: block; word-break: break-all; background: #1a1d21; padding: 10px 12px; border-radius: 6px; font-size: .9em; }
-  .dl a { display: inline-block; margin: 4px 8px 4px 0; padding: 8px 12px; background: #1f2937; border-radius: 6px; text-decoration: none; }
-  ol, ul { padding-left: 1.3em; } li { margin: .25em 0; } .muted { color: #9aa0a6; }
+  :root { color-scheme: dark; }
+  body { margin: 0; padding: 28px 16px 56px; background: #07080d; color: #ece7df; font: 17px/1.55 -apple-system, "Inter", "Segoe UI", system-ui, sans-serif; max-width: 40em; margin-inline: auto; }
+  h1 { font-size: 1.5em; font-weight: 300; margin: 0 0 .3em; letter-spacing: -.01em; }
+  h2 { font-size: 1em; font-weight: 400; margin: 1.6em 0 .4em; color: #fff; }
+  p { color: #c6bfb4; margin: .5em 0; }
+  a { color: #e0a262; }
+  .step { display: grid; grid-template-columns: 2em 1fr; gap: .4em 1em; align-items: start; margin: 1.4em 0; padding: 1.1em 1.2em; background: rgba(14,17,25,.8); border: 1px solid rgba(236,231,223,.1); border-radius: 16px; }
+  .n { font-family: ui-monospace, Menlo, Consolas, monospace; color: #8f887d; font-size: .8em; padding-top: .4em; }
+  .btn { display: inline-block; margin: .5em .5em .2em 0; padding: 12px 18px; border-radius: 999px; text-decoration: none; font-size: 1em; }
+  .primary { background: #f4efe7; color: #07080d; }
+  .secondary { background: rgba(244,239,231,.08); color: #ece7df; border: 1px solid rgba(244,239,231,.25); }
+  details { margin: .6em 0; } summary { cursor: pointer; color: #ece7df; }
+  code, .fp { font-family: ui-monospace, Menlo, Consolas, monospace; }
+  .fp { display: block; word-break: break-all; background: #10131a; padding: 10px 12px; border-radius: 8px; font-size: .85em; color: #c6bfb4; }
+  ol, ul { padding-left: 1.3em; } li { margin: .25em 0; } .muted { color: #8f887d; font-size: .9em; }
 </style>
 </head>
 <body>
-<h1>${esc(name)}: this beacon uses its own certificate; install it once</h1>
-<p>There is no internet on this network, so no public authority can vouch for the beacon. Instead it carries its own certificate authority. Browsers only allow encryption, the camera and offline install on pages served over https, so your phone has to trust that authority before the console will work. You do this one time per device.</p>
-<p><strong>What trusting it means.</strong> A trusted authority can vouch for any website name, not only this beacon. Whoever holds the beacon's private key file could, on this device, impersonate other https sites until you remove the certificate (iPhone: Settings → General → VPN &amp; Device Management; Android: Settings → Security → Encryption &amp; credentials → Trusted credentials → User; desktop: the same store you imported it into). Only install a beacon run by someone you trust with that, and remove it when the deployment ends. The certificate expires by itself after five years.</p>
-<p>Before trusting it, compare this fingerprint with the one printed where the beacon is running:</p>
+<h1>join ${esc(name)}</h1>
+<p>this room runs its own network, with no internet. two taps and you are in.</p>
+
+<div class="step"><div class="n">01</div><div>
+  <strong>install the beacon's certificate</strong>
+  <p>the beacon vouches for itself, since no public authority can reach a room without internet. your device asks you to trust it once.</p>
+  <a class="btn primary" href="/ca.mobileconfig">iPhone / iPad</a>
+  <a class="btn secondary" href="/ca.crt">Android</a>
+  <a class="btn secondary" href="/ca.crt">Mac</a>
+  <a class="btn secondary" href="/ca.der">Windows</a>
+  <a class="btn secondary" href="/ca.pem">Linux / Firefox</a>
+  <details><summary>where the switch is, per device</summary>
+    <h2>iPhone and iPad</h2>
+    <ol><li>allow the download, then open Settings → <b>Profile Downloaded</b> → <b>Install</b>.</li><li>Settings → General → About → <b>Certificate Trust Settings</b> → switch on <b>beacon local CA</b>.</li></ol>
+    <h2>Android</h2>
+    <ol><li>Settings → Security → <b>Encryption &amp; credentials</b> → <b>Install a certificate</b> → <b>CA certificate</b> → <b>Install anyway</b> → pick <code>beacon-ca.crt</code>.</li></ol>
+    <p class="muted">Firefox on Android keeps its own store: Settings → About Firefox, tap the logo five times, then Settings → Secret Settings → Use third party CA certificates.</p>
+    <h2>Mac</h2>
+    <ol><li>double-click the file; it opens in <b>Keychain Access</b>. add it to <b>System</b>, double-click the entry, open <b>Trust</b>, set <b>Always Trust</b>.</li></ol>
+    <h2>Windows</h2>
+    <ol><li>Win+R, run <code>certmgr.msc</code>. <b>Trusted Root Certification Authorities</b> → All Tasks → <b>Import</b> the file.</li></ol>
+    <h2>Linux and Firefox</h2>
+    <ol><li>Firefox: Settings → Privacy &amp; Security → <b>Certificates</b> → View Certificates → Authorities → <b>Import</b>, tick <b>Trust this CA to identify websites</b>.</li><li>Chrome: Settings → Privacy and security → Security → Manage certificates → Authorities → Import.</li><li>system-wide (Debian/Ubuntu): copy the PEM to <code>/usr/local/share/ca-certificates/beacon-ca.crt</code> and run <code>sudo update-ca-certificates</code>.</li></ol>
+  </details>
+</div></div>
+
+<div class="step"><div class="n">02</div><div>
+  <strong>open the console</strong>
+  <p>it is served by this beacon and connects to it by itself. add it to your home screen from the browser menu and it keeps working with the network off.</p>
+  <a class="btn primary" href="${esc(consoleUrl)}">open the console</a>
+  ${httpsUrls.length > 1 ? `<details><summary>other addresses of this beacon</summary><ul>${urls}</ul></details>` : ''}
+  <p class="muted">if the browser still warns, the certificate was installed but not marked trusted: on iPhone that is the Certificate Trust Settings switch; on a Mac the Always Trust setting.</p>
+</div></div>
+
+<details>
+<summary>what trusting the certificate means, and how to undo it</summary>
+<p>a trusted authority can vouch for any website name, not only this beacon. whoever holds the beacon's private key file could, on this device, impersonate other https sites until you remove the certificate (iPhone: Settings → General → VPN &amp; Device Management; Android: Settings → Security → Encryption &amp; credentials → Trusted credentials → User; desktop: the store you imported it into). only install a beacon run by someone you trust with that, and remove it when the deployment ends. the certificate expires by itself after five years.</p>
+<p>before trusting it, compare this fingerprint with the one printed where the beacon runs:</p>
 <span class="fp">SHA-256 ${esc(ca.fingerprint)}</span>
-<p class="dl"><a href="/ca.mobileconfig">iPhone / iPad profile</a> <a href="/ca.crt">certificate (.crt)</a> <a href="/ca.pem">PEM</a> <a href="/ca.der">DER</a></p>
-
-<h2>iPhone and iPad</h2>
-<ol>
-<li>Tap <a href="/ca.mobileconfig">iPhone / iPad profile</a> and allow the download.</li>
-<li>Open Settings. Tap <b>Profile Downloaded</b> near the top, then <b>Install</b> (enter your passcode).</li>
-<li>Go to Settings → General → About → <b>Certificate Trust Settings</b> and switch on <b>beacon local CA</b>.</li>
-</ol>
-
-<h2>Android</h2>
-<ol>
-<li>Tap <a href="/ca.crt">certificate (.crt)</a> to download it.</li>
-<li>Open Settings → Security (or Security &amp; privacy) → <b>Encryption &amp; credentials</b> → <b>Install a certificate</b> → <b>CA certificate</b>.</li>
-<li>Choose <b>Install anyway</b> and pick the downloaded <code>beacon-ca.crt</code>.</li>
-</ol>
-<p class="muted">Some browsers on Android (Firefox) keep their own store: Settings → About Firefox, tap the logo five times, then Settings → Secret Settings → Use third party CA certificates.</p>
-
-<h2>macOS</h2>
-<ol>
-<li>Download <a href="/ca.crt">certificate (.crt)</a> and double-click it; it opens in <b>Keychain Access</b>.</li>
-<li>Add it to the <b>System</b> keychain, then double-click the entry, open <b>Trust</b> and set <b>When using this certificate</b> to <b>Always Trust</b>.</li>
-</ol>
-
-<h2>Windows</h2>
-<ol>
-<li>Download <a href="/ca.der">DER</a>. Press Win+R, run <code>certmgr.msc</code>.</li>
-<li>Right-click <b>Trusted Root Certification Authorities</b> → All Tasks → <b>Import</b>, and choose the downloaded file.</li>
-</ol>
-
-<h2>Linux and Firefox</h2>
-<ol>
-<li>Firefox on any OS: Settings → Privacy &amp; Security → <b>Certificates</b> → View Certificates → Authorities → <b>Import</b> the <a href="/ca.pem">PEM</a>, and tick <b>Trust this CA to identify websites</b>.</li>
-<li>Chrome and Chromium: Settings → Privacy and security → Security → Manage certificates → Authorities → Import.</li>
-<li>System-wide (Debian/Ubuntu): copy the PEM to <code>/usr/local/share/ca-certificates/beacon-ca.crt</code> and run <code>sudo update-ca-certificates</code>.</li>
-</ol>
-
-<h2>Then open the console</h2>
-<ul>${urls}</ul>
-<p class="muted">If the browser still warns, the certificate was installed but not marked trusted: on iPhone that is the Certificate Trust Settings switch; on macOS the Always Trust setting.</p>
+</details>
 </body>
 </html>
 `;

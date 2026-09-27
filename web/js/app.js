@@ -15,7 +15,7 @@ import { cameraAvailable, startScanner } from './scan.js';
 import { registerServiceWorker, offlineReadiness, watchOnline, onWorkerUpdate } from './status.js';
 import { $, $$, toast, openOverlay, closeOverlay, confirmDialog, promptDialog, download, copyText } from './ui.js';
 import { state, DEFAULT_SETTINGS, resetUnlockedState, on } from './state.js';
-import { beacon, connectBeacon, disconnectBeacon, normalizeBeaconUrl } from './beacon.js';
+import { beacon, connectBeacon, disconnectBeacon, normalizeBeaconUrl, discoverBeacon } from './beacon.js';
 import {
   loadRooms, createRoom, inviteDevice, removeMember, rotateEpoch, leaveRoom, deleteRoom,
   loadMessages, sendRoomMessage, sendDirectMessage, refreshSubscriptions, roomPeerCount, devicePeerCount,
@@ -23,6 +23,7 @@ import {
   sendMedia, MAX_MEDIA_BYTES,
   joinRoom, declineInvite, resendInvite, proposeMember, approveProposal, declineProposal, requestDm, acceptDmRequest, ignoreDmRequest,
   handoverRoom, dissolveRoom, setViewing, clearUnread, unreadTotal, deviceForMember, upsertDevice,
+  resetRooms, forgetConversation, pruneSeen,
 } from './rooms.js';
 import { call, joinCall, leaveCall, toggleMute, toggleVideo, snapshot as callSnapshot, resumeAudio } from './calls.js';
 import { notificationSupport, requestNotifications, notifyIncoming, clearNotifications } from './notify.js';
@@ -42,7 +43,7 @@ function armIdleLock() {
   clearTimeout(state.lockTimer);
   const mins = Number(state.settings.autoLockMinutes) || 0;
   if (!state.vaultKey || mins <= 0) return;
-  state.lockTimer = setTimeout(() => { lock('locked after inactivity'); }, mins * 60 * 1000);
+  state.lockTimer = setTimeout(() => { if (call.roomId) { armIdleLock(); return; } lock('locked after inactivity'); }, mins * 60 * 1000);
 }
 let lastActivity = Date.now();
 for (const ev of ['pointerdown', 'keydown', 'touchstart']) document.addEventListener(ev, () => { lastActivity = Date.now(); armIdleLock(); }, { passive: true });
@@ -59,11 +60,15 @@ let reloadOnLock = false;
 
 function lock(reason) {
   if (reloadOnLock) { location.reload(); return; }
+  closeOverlay();
+  stopRecording(true);
+  destroyMap();
   releaseMedia();
   stopLiveShare();
   if (call.roomId) leaveCall().catch(() => {});
   disconnectBeacon();
   resetUnlockedState();
+  resetRooms();
   clearTimeout(state.lockTimer);
   stopActiveScanner();
   stopFrameCycle();
@@ -300,6 +305,7 @@ async function wipeEverything() {
   if (!ok) return;
   try {
     disconnectBeacon();
+    resetRooms();
     await db.destroyDb();
     state.profile = null; resetUnlockedState();
     renderGate();
@@ -323,6 +329,7 @@ const ROUTES = [
 
 async function enterApp() {
   await loadUnlockedData();
+  pruneSeen().catch(() => {});
   state.unlockedAt = nowIso();
   $('#who').textContent = state.profile.name;
   $('#lock-btn').hidden = false;
@@ -330,6 +337,8 @@ async function enterApp() {
   renderShell();
   if (state.settings.beaconAuto && state.settings.beaconUrl) {
     try { connectBeacon(state.settings.beaconUrl, state.settings.beaconPassword); } catch (e) { toast(`beacon: ${e.message}`, 'error'); }
+  } else if (!state.settings.beaconUrl) {
+    findBeacon({ quiet: true }).catch(() => {});
   }
   if (!location.hash || !ROUTES.some(([r]) => location.hash.startsWith(`#/${r}`))) location.hash = '#/overview';
   else route();
@@ -377,6 +386,9 @@ function route() {
   stopCompass();
   currentRoomId = null;
   setViewing(null);
+  releaseMedia();
+  stopRecording(true);
+  destroyMap();
   const el = $('#content');
   if (state.route === 'rooms' && parts[1]) { viewRoom(el, parts[1]); return; }
   const view = { overview: viewOverview, rooms: viewRooms, devices: viewDevices, notes: viewNotes, transfer: viewTransfer, privacy: viewPrivacy, settings: viewSettings }[state.route];
@@ -481,7 +493,10 @@ function renderDeviceList() {
       location.hash = `#/rooms/${dmId(dev)}`;
     } else if (btn.dataset.act === 'forget') {
       const ok = await confirmDialog({ title: `forget ${dev.name}`, body: 'the shared key is deleted here. the other device keeps its copy until it forgets you too. rooms you share stay, but this device can no longer be reached directly.', okLabel: 'forget', danger: true });
-      if (!ok) return;
+      if (!ok || !state.vaultKey) return;
+      if (liveShareRoomId === dmId(dev)) stopLiveShare();
+      if (call.roomId === dmId(dev)) await leaveCall();
+      forgetConversation(dmId(dev));
       await db.del('devices', dev.id);
       await deleteConversationMessages(dmId(dev));
       state.devices = state.devices.filter((d) => d.id !== dev.id);
@@ -566,14 +581,16 @@ function renderSas(el) {
     </div>`;
   area.scrollIntoView({ behavior: 'smooth', block: 'center' });
   $('#sas-yes').onclick = async () => {
-    const t = pairing.theirs;
+    if (!pairing || !pairing.derived) return;
+    const done = pairing; pairing = null; // a second tap finds nothing to confirm
+    const t = done.theirs;
     const dev = {
       id: existing ? existing.id : uuid(),
       name: t.name,
       pub: b64url.encode(t.pub),
       signPub: t.signPub ? b64url.encode(t.signPub) : null,
       fingerprint: t.fingerprint,
-      pairKey: b64url.encode(pairing.derived.pairKey),
+      pairKey: b64url.encode(done.derived.pairKey),
       verified: true,
       pairedAt: nowIso(),
       lastTransferAt: existing ? existing.lastTransferAt : null,
@@ -581,7 +598,6 @@ function renderSas(el) {
     await saveDevice(dev);
     await refreshSubscriptions();
     // paired: open the conversation with them straight away
-    pairing = null;
     toast(`paired with ${dev.name}`, 'ok');
     location.hash = `#/rooms/${dmId(dev)}`;
     return;
@@ -743,6 +759,8 @@ async function viewRoom(el, convId) {
   wireMediaComposer(conv);
   const tl = $('#timeline');
   const msgs = await loadMessages(convId);
+  // the person may have moved on while the history was being opened
+  if (currentRoomId !== convId || !document.body.contains(tl)) return;
   tl.innerHTML = msgs.map((m) => bubble(conv, m)).join('') || '<div class="sysline">nothing yet</div>';
   tl.scrollTop = tl.scrollHeight;
   const compose = $('#compose');
@@ -762,7 +780,7 @@ async function viewRoom(el, convId) {
   compose.addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); doSend(); } });
   compose.addEventListener('input', () => { compose.style.height = 'auto'; compose.style.height = `${Math.min(compose.scrollHeight, 160)}px`; });
   if (state.settings.quietKeys === 'quiet') {
-    const quiet = quietKeyboard(compose, { onDone: doSend, mount: $('.composer'), where: 'append' });
+    const quiet = quietKeyboard(compose, { onDone: doSend, mount: $('.composer'), where: 'append', stay: true });
     quiet.open();
   }
   const people = $('#room-people');
@@ -771,6 +789,7 @@ async function viewRoom(el, convId) {
   $('#room-call').onclick = async () => {
     if (call.roomId === convId) { await leaveCall(); return; }
     if (call.roomId) return toast('already in a call in another conversation', 'error');
+    if (beacon.status !== 'on') return noBeaconSheet(); // the call is set up over the beacon before it goes peer to peer
     try { await joinCall({ id: convId, send: callTransport(conv) }); toast('in the call: your microphone is live', 'ok'); }
     catch (e) { toast(`call: ${e.message}`, 'error'); }
   };
@@ -821,22 +840,49 @@ function mediaBubble(m, mine, who, when, id) {
 
 function setSendStatus(text) { const el = $('#send-status'); if (el) el.textContent = text || ''; }
 
+// looks for a beacon on this network (the page's own origin, then the hotspot
+// addresses); on a hit it is saved and connected, and reconnects on every unlock
+let finding = null;
+async function findBeacon({ quiet = false } = {}) {
+  if (finding) return finding;
+  if (!quiet) toast('looking for a beacon on this network');
+  finding = (async () => {
+    try {
+      const url = await discoverBeacon({ known: state.settings.beaconUrl });
+      if (!url) { if (!quiet) toast('no beacon answered on this network', 'error'); return null; }
+      if (!state.vaultKey) return null;
+      state.settings.beaconUrl = url; state.settings.beaconAuto = true;
+      await saveSettings();
+      connectBeacon(url, state.settings.beaconPassword);
+      toast('found a beacon on this network; connecting', 'ok');
+      if (state.route === 'privacy' || state.route === 'overview') route();
+      return url;
+    } finally { finding = null; }
+  })();
+  return finding;
+}
+
 // sending with no beacon: say how messages travel, and offer the way there
 function noBeaconSheet() {
   const box = openOverlay(`
     <h3>no beacon in reach</h3>
-    <p style="margin-top:.6rem">messages, photos and calls travel over a beacon: a small relay on the wi-fi hotspot in the room. nothing goes over the internet, ever, even when the internet is there.</p>
-    <p>someone runs it on a laptop or a spare phone with one command, everyone installs its certificate once, and then this console connects to it under privacy. the beacon carries only ciphertext it cannot read.</p>
-    <div class="row" style="margin-top:1.2rem;justify-content:flex-end"><button class="ghost" id="nb-close">close</button><a href="#/privacy" id="nb-go"><button class="primary">set up a beacon</button></a></div>`);
+    <p style="margin-top:.6rem">messages, photos and calls travel over a beacon: a small relay on the wi-fi in the room. nothing goes over the internet, ever, even when the internet is there.</p>
+    <ol class="steps" style="margin-top:1rem">
+      <li><strong>one of you runs the beacon</strong><p>on a laptop with node installed, one command. it prints an address and a qr code.</p><div class="codebox" style="margin-top:.4rem;user-select:all">npx github:shep95/gabriel.asher</div></li>
+      <li><strong>everyone joins the same wi-fi</strong><p>the laptop's hotspot, a phone's hotspot, or the room's router. no internet is needed on it.</p></li>
+      <li><strong>open the address once</strong><p>tap install for the beacon's certificate, then open the console from there. it connects to the beacon by itself, and this one will find it too.</p></li>
+    </ol>
+    <div class="row" style="margin-top:1.2rem;justify-content:flex-end"><button class="ghost" id="nb-close">close</button><button class="small" id="nb-copy">copy the command</button><button class="primary" id="nb-find">find a beacon here</button></div>`);
   $('#nb-close', box).onclick = closeOverlay;
-  $('#nb-go', box).onclick = () => closeOverlay();
+  $('#nb-copy', box).onclick = () => copyText('npx github:shep95/gabriel.asher').then(() => toast('copied', 'ok')).catch(() => toast('select the command and copy it', 'error'));
+  $('#nb-find', box).onclick = async () => { closeOverlay(); await findBeacon(); };
 }
 
 // a photo is re-encoded before it leaves: that strips exif (camera, time,
 // gps) and bounds the size. it steps down until the jpeg fits the target.
 async function prepareImage(file) {
   let bmp;
-  try { bmp = await createImageBitmap(file); } catch { return { name: file.name || 'image', mime: file.type || 'application/octet-stream', bytes: new Uint8Array(await file.arrayBuffer()) }; }
+  try { bmp = await createImageBitmap(file); } catch { throw new Error('this photo format cannot be cleaned of its metadata here. export it as jpeg or png first, or send it as a file knowing it keeps its data.'); }
   const TARGET = 350_000;
   let blob = null, w = bmp.width, h = bmp.height;
   const encode = async (side, q) => {
@@ -893,45 +939,66 @@ function wireMediaComposer(conv) {
   const mime = pickAudioMime();
   if (mime === null || !navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) return;
   mic.hidden = false;
-  let rec = null, chunks = [], timer = null, startedAt = 0;
-  const stop = () => { if (rec && rec.state !== 'inactive') rec.stop(); };
+  let pressed = false;
+  const stop = () => { pressed = false; stopRecording(false); };
   const start = async (e) => {
     e.preventDefault();
-    if (rec) return;
+    if (recording) return;
     if (beacon.status !== 'on') return noBeaconSheet();
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      rec = new MediaRecorder(stream, mime ? { mimeType: mime, audioBitsPerSecond: 24_000 } : { audioBitsPerSecond: 24_000 });
-      chunks = [];
-      rec.ondataavailable = (ev) => { if (ev.data && ev.data.size) chunks.push(ev.data); };
-      rec.onstop = async () => {
-        for (const t of stream.getTracks()) t.stop();
-        clearInterval(timer);
-        mic.classList.remove('rec');
-        const duration = (Date.now() - startedAt) / 1000;
-        const type = (rec.mimeType || mime || 'audio/webm').split(';')[0];
-        rec = null;
-        setSendStatus('');
-        if (duration < 0.6) return toast('hold the microphone while you speak');
-        const blob = new Blob(chunks, { type });
-        const ext = type.includes('mp4') ? 'm4a' : type.includes('ogg') ? 'ogg' : 'webm';
-        await sendMediaFromComposer(conv, { name: `voice-${new Date().toISOString().slice(11, 19).replace(/:/g, '')}.${ext}`, mime: type, bytes: new Uint8Array(await blob.arrayBuffer()), duration }, 'voice clip');
-      };
-      rec.start(250);
-      startedAt = Date.now();
-      mic.classList.add('rec');
-      timer = setInterval(() => {
-        const s = (Date.now() - startedAt) / 1000;
-        setSendStatus(`recording · ${fmtClock(s)} · release to send`);
-        if (s >= 60) stop();
-      }, 200);
-    } catch (err) { toast(`microphone: ${err.message}`, 'error'); }
+    pressed = true;
+    let stream;
+    try { stream = await navigator.mediaDevices.getUserMedia({ audio: true }); }
+    catch (err) { pressed = false; return toast(`microphone: ${err.message}`, 'error'); }
+    // the finger lifted while the browser was asking: a tap records nothing
+    if (!pressed || recording || currentRoomId !== conv.id) { for (const t of stream.getTracks()) t.stop(); return; }
+    const rec = new MediaRecorder(stream, mime ? { mimeType: mime, audioBitsPerSecond: 24_000 } : { audioBitsPerSecond: 24_000 });
+    const chunks = [];
+    const startedAt = Date.now();
+    recording = { rec, stream, discard: false, mic };
+    rec.ondataavailable = (ev) => { if (ev.data && ev.data.size) chunks.push(ev.data); };
+    rec.onstop = async () => {
+      const me = recording; recording = null;
+      for (const t of stream.getTracks()) t.stop();
+      clearInterval(timer);
+      mic.classList.remove('rec');
+      setSendStatus('');
+      if (!me || me.discard || !state.vaultKey) return;
+      const duration = (Date.now() - startedAt) / 1000;
+      const type = (rec.mimeType || mime || 'audio/webm').split(';')[0];
+      if (duration < 0.6) return toast('hold the microphone while you speak');
+      const blob = new Blob(chunks, { type });
+      const ext = type.includes('mp4') ? 'm4a' : type.includes('ogg') ? 'ogg' : 'webm';
+      await sendMediaFromComposer(conv, { name: `voice-${new Date().toISOString().slice(11, 19).replace(/:/g, '')}.${ext}`, mime: type, bytes: new Uint8Array(await blob.arrayBuffer()), duration }, 'voice clip');
+    };
+    rec.start(250);
+    mic.classList.add('rec');
+    const timer = setInterval(() => {
+      const s = (Date.now() - startedAt) / 1000;
+      setSendStatus(`recording · ${fmtClock(s)} · release to send`);
+      if (s >= 60) stop();
+    }, 200);
   };
   mic.addEventListener('pointerdown', start);
   mic.addEventListener('pointerup', stop);
   mic.addEventListener('pointercancel', stop);
   mic.addEventListener('pointerleave', stop);
   mic.addEventListener('contextmenu', (e) => e.preventDefault());
+}
+
+// one recorder at a time, known to lock and navigation so it never outlives its screen
+let recording = null;
+function stopRecording(discard) {
+  const r = recording;
+  if (!r) return;
+  if (discard) r.discard = true;
+  if (r.rec.state !== 'inactive') r.rec.stop();
+  else { recording = null; for (const t of r.stream.getTracks()) t.stop(); }
+}
+
+// the map inside the where sheet, destroyed with the sheet and on lock
+let whereMap = null;
+function destroyMap() {
+  if (whereMap) { try { whereMap.remove(); } catch { /* already gone */ } whereMap = null; }
 }
 
 // half-received media shows its progress under the timeline
@@ -986,8 +1053,8 @@ on('rooms:changed', ({ roomId, reason, who, deviceId }) => {
       notifyIncoming({ senderName: whoName, route: '#/rooms' });
       break;
     case 'invited':
-      // joined: open it, unless the person is mid-conversation or on a call
-      if (!currentRoomId && !call.roomId && state.vaultKey) location.hash = `#/rooms/${roomId}`;
+      // joined: open it, unless the person is busy elsewhere (a note, a pairing, a call)
+      if (['rooms', 'overview'].includes(state.route) && !currentRoomId && !call.roomId && state.vaultKey) location.hash = `#/rooms/${roomId}`;
       else toast(`joined ${name}`, 'ok');
       break;
     case 'proposal':
@@ -1003,13 +1070,15 @@ on('rooms:changed', ({ roomId, reason, who, deviceId }) => {
     case 'dm-ready': {
       const dev = state.devices.find((d) => d.id === deviceId);
       toast(`${whoName} accepted. you can message them now.`, 'ok');
-      if (dev && !currentRoomId && !call.roomId) location.hash = `#/rooms/${dmId(dev)}`;
+      if (dev && state.route === 'rooms' && !currentRoomId && !call.roomId) location.hash = `#/rooms/${dmId(dev)}`;
       break;
     }
     case 'handover':
       if (who && who.fp === state.identity.fingerprint) toast(`you are the founder of ${name} now`, 'ok');
       break;
     case 'dissolved':
+      if (liveShareRoomId === roomId) stopLiveShare();
+      if (call.roomId === roomId) leaveCall().catch(() => {});
       if (roomId !== currentRoomId) toast(`${name} was dissolved`, 'error');
       break;
     default: break;
@@ -1103,6 +1172,8 @@ async function peopleSheet(room, founder) {
     if (founder && room.members.length > 1) return leaveAsFounderSheet(room);
     const ok = await confirmDialog({ title: founder ? 'delete this room here' : 'leave this room', body: founder ? 'you are its only member. the room and its history are deleted from this device.' : 'your copy of the history is deleted. the founder can add you again.', okLabel: founder ? 'delete' : 'leave', danger: true });
     if (!ok) return;
+    if (!state.vaultKey) return;
+    if (liveShareRoomId === room.id) stopLiveShare();
     if (call.roomId === room.id) await leaveCall();
     await leaveRoom(room);
     await deleteRoom(room.id);
@@ -1126,6 +1197,7 @@ function leaveAsFounderSheet(room) {
     if (!b) return;
     try {
       await handoverRoom(room, b.dataset.heir);
+      if (liveShareRoomId === room.id) stopLiveShare();
       if (call.roomId === room.id) await leaveCall();
       await leaveRoom(room); await deleteRoom(room.id);
       closeOverlay(); location.hash = '#/rooms'; toast('handed over and left', 'ok');
@@ -1135,6 +1207,7 @@ function leaveAsFounderSheet(room) {
     const ok = await confirmDialog({ title: 'dissolve this room', body: 'every member sees it end. history stays on each device; nothing new can be sent.', okLabel: 'dissolve', danger: true, typeToConfirm: 'dissolve' });
     if (!ok) return;
     try {
+      if (liveShareRoomId === room.id) stopLiveShare();
       if (call.roomId === room.id) await leaveCall();
       await dissolveRoom(room); await deleteRoom(room.id);
       closeOverlay(); location.hash = '#/rooms'; toast('dissolved', 'ok');
@@ -1159,7 +1232,7 @@ async function whereSheet(conv) {
     <div id="wh-list" class="list"></div>
     ${src ? '<div class="mapbox" id="wh-map" style="margin-top:1rem"></div>' : '<p class="hint" style="color:var(--dim);margin-top:.8rem">no map tiles enabled (privacy → map). the radar above needs none.</p>'}
   `);
-  $('#wh-close', box).onclick = () => { closeOverlay(); stopCompass(); };
+  $('#wh-close', box).onclick = () => { closeOverlay(); stopCompass(); destroyMap(); };
   const canvas = $('#radar', box);
   let heading = null;
   const paint = () => {
@@ -1168,7 +1241,7 @@ async function whereSheet(conv) {
     $('#wh-list', box).innerHTML = points.length ? points.map((p) => `<div class="item-row"><div class="t"><div class="name">${escapeHtml(p.label)}${p.stale ? ' <span style="color:var(--dim)">(old)</span>' : ''}</div><p class="sub">${myPos ? `${fmtDistance(distanceM(myPos, p))} · bearing ${Math.round(bearingDeg(myPos, p))}° ${compassPoint(bearingDeg(myPos, p))}` : `${p.lat.toFixed(5)}, ${p.lon.toFixed(5)}`} · ±${Number(p.acc) || '?'} m · ${relativeTime(p.rx || p.ts)}</p><p class="sub">${externalMapLinks(p).map((l) => `<a href="${escapeHtml(l.href)}" target="_blank" rel="noopener noreferrer">${l.label}</a>`).join(' · ')}</p></div></div>`).join('') : '<div class="empty">nobody here has shared a location yet.</div>';
   };
   paint();
-  if (src) renderMap($('#wh-map', box), myPos, points).catch((e) => toast(`map: ${e.message}`, 'error'));
+  if (src) renderMap($('#wh-map', box), myPos, points).then((m) => { destroyMap(); whereMap = m; }).catch((e) => toast(`map: ${e.message}`, 'error'));
   const status = (t) => { $('#wh-status', box).textContent = t; };
   $('#wh-locate', box).onclick = async () => {
     status('reading position…');
@@ -1194,6 +1267,8 @@ async function whereSheet(conv) {
     stopLiveShare();
     try {
       liveShareStop = watchPosition(async (p) => {
+        const still = getConv(conv.id);
+        if (!still || (still.room && still.room.left)) { stopLiveShare(); return; }
         myPos = p;
         try { await conv.send('location', { lat: p.lat, lon: p.lon, acc: p.acc, live: true }); } catch { /* beacon gone; keep watching */ }
       }, { minIntervalMs: 20000 });
@@ -1366,6 +1441,7 @@ function showEnvelope(out, text, dev) {
 const inbox = { tid: null, total: 0, parts: new Map() };
 
 function renderReceive(box) {
+  stopFrameCycle();
   inbox.tid = null; inbox.total = 0; inbox.parts.clear();
   box.innerHTML = `
     <div class="row">${cameraAvailable() ? '<button class="primary" id="r-scan">scan a code</button>' : ''}</div>
@@ -1471,7 +1547,7 @@ async function viewPrivacy(el) {
         <p style="margin-top:.6rem">a beacon is a small relay someone runs on a laptop or a hotspot in the room. it carries rooms and call setup as ciphertext it cannot read. nothing connects until you say so here.</p>
         <div class="field" style="margin-top:1rem"><label for="b-url">address</label><input id="b-url" type="text" value="${escapeHtml(s.beaconUrl)}" placeholder="wss://192.168.4.1:8443/ws" autocomplete="off" autocapitalize="off" spellcheck="false"></div>
         <div class="field"><label for="b-pw">password (if the beacon has one)</label><input id="b-pw" type="password" value="${escapeHtml(s.beaconPassword)}" autocomplete="off"></div>
-        <div class="row"><button class="small" id="b-connect">${beacon.status === 'on' || beacon.status === 'connecting' ? 'disconnect' : 'connect'}</button><label class="row" style="margin:0;gap:.4rem"><input type="checkbox" id="b-auto" ${s.beaconAuto ? 'checked' : ''}> reconnect on unlock</label><span class="beaconchip ${beacon.status}" id="top-beacon"><i></i><span></span></span></div>
+        <div class="row"><button class="small" id="b-connect">${beacon.status === 'on' || beacon.status === 'connecting' ? 'disconnect' : 'connect'}</button><button class="small ghost" id="b-find">find one on this network</button><label class="row" style="margin:0;gap:.4rem"><input type="checkbox" id="b-auto" ${s.beaconAuto ? 'checked' : ''}> reconnect on unlock</label><span class="beaconchip ${beacon.status}" id="top-beacon"><i></i><span></span></span></div>
         <p class="hint" style="color:var(--dim);margin-top:.8rem">${beaconHttp ? `first time on this beacon: install its certificate from <span class="mono">${escapeHtml(beaconHttp)}</span>, then come back.` : 'first time on a beacon: open its install page (http://its-address:8080/) to trust its certificate, then connect here.'} ${beacon.lastError ? `<br><span style="color:var(--danger)">${escapeHtml(beacon.lastError)}</span>` : ''}</p>
       </div>
 
@@ -1548,6 +1624,7 @@ async function viewPrivacy(el) {
     } catch (e) { toast(e.message, 'error'); }
   };
   $('#b-auto').onchange = async () => { s.beaconAuto = $('#b-auto').checked; await saveSettings(); };
+  $('#b-find').onclick = () => findBeacon().catch((e) => toast(e.message, 'error'));
   el.onclick = async (e) => {
     const sh = e.target.closest('[data-shield]'); const nt = e.target.closest('[data-notif]'); const tl = e.target.closest('[data-tiles]');
     if (sh) { s.shield = sh.dataset.shield === '1'; await saveSettings(); viewPrivacy(el); }
@@ -1665,6 +1742,7 @@ function viewSettings(el) {
     const ok = await confirmDialog({ title: 'replace this device\'s data', body: `everything here is replaced by the backup of <strong style="font-weight:400">${escapeHtml(profile.name)}</strong> exported ${relativeTime(dump.exportedAt)}. you will need that profile's passphrase to unlock it.`, okLabel: 'replace', danger: true, typeToConfirm: 'replace' });
     if (!ok) return;
     try {
+      disconnectBeacon(); resetRooms();
       await db.clearAll();
       for (const s of db.STORES) {
         for (const r of dump.stores[s] || []) {

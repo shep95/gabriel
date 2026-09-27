@@ -263,13 +263,19 @@ test('tags: validation and the 64-subscription cap', async () => {
   assert.deepEqual(await e.next(), { t: 'error', code: 'bad_id' });
   e.close();
 
-  const d = await join(open.url);
-  const many = Array.from({ length: 64 }, (_, i) => i.toString(16).padStart(32, '0'));
-  d.send({ t: 'sub', tags: many });
-  for (let i = 0; i < 64; i++) assert.equal((await d.next()).t, 'count');
-  d.send({ t: 'sub', tags: ['f'.repeat(32)] });
-  assert.deepEqual(await d.next(), { t: 'error', code: 'rate' });
-  d.close();
+  // the subscription cap is a hub option; this hub is given the smallest one a client assumes
+  const capped = await startHub({ maxSubs: 64 });
+  try {
+    const d = await join(capped.url);
+    const many = Array.from({ length: 64 }, (_, i) => i.toString(16).padStart(32, '0'));
+    d.send({ t: 'sub', tags: many });
+    for (let i = 0; i < 64; i++) assert.equal((await d.next()).t, 'count');
+    d.send({ t: 'sub', tags: ['f'.repeat(32)] });
+    assert.deepEqual(await d.next(), { t: 'error', code: 'rate' });
+    d.close();
+  } finally {
+    await capped.stop();
+  }
 });
 
 test('frames: bad json, unknown type, ping/pong, binary closes 1003', async () => {
